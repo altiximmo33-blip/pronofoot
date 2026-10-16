@@ -4,17 +4,23 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Tester la cle
+      - name: Tester les cles
         env:
           KEY: ${{ secrets.APIFOOTBALL_KEY }}
+          FD: ${{ secrets.FOOTBALLDATA_KEY }}
         run: |
           api() { curl -s -H "x-apisports-key: $KEY" "https://v3.football.api-sports.io/$1"; }
-          echo "=== Compte ==="
-          api "status" | jq -c '{errors, plan: .response.subscription.plan, requetes: .response.requests}'
+          fd() { curl -s -H "X-Auth-Token: $FD" "https://api.football-data.org/v4/$1"; }
           TODAY=$(TZ=Europe/Paris date +%F)
-          echo "=== Matchs du jour $TODAY ==="
-          api "fixtures?date=$TODAY&timezone=Europe/Paris" | jq -c '{errors, nombre: .results}'
-          echo "=== Classement Ligue 1 saison 2026 ==="
-          api "standings?league=61&season=2026" | jq -c '{errors, nombre: .results, premier: .response[0].league.standings[0][0].team.name}'
-          echo "=== Buteurs Ligue 1 saison 2026 ==="
-          api "players/topscorers?league=61&season=2026" | jq -c '{errors, nombre: .results, premier: .response[0].player.name}'
+          FID=$(api "fixtures?date=$TODAY&timezone=Europe/Paris" | jq '[.response[] | select(.league.id==61)][0].fixture.id')
+          echo "=== Match Ligue 1 du jour : $FID ==="
+          echo "=== API-Football : compos ==="
+          api "fixtures/lineups?fixture=$FID" | jq -c '{errors, nombre: .results}'
+          echo "=== API-Football : absents ==="
+          api "injuries?fixture=$FID" | jq -c '{errors, nombre: .results, exemple: .response[0].player.name}'
+          echo "=== football-data : classement dom/ext Ligue 1 ==="
+          fd "competitions/FL1/standings" | jq -c '{erreur: .message, saison: .season.startDate, types: [.standings[]?.type], premier_domicile: ([.standings[]? | select(.type=="HOME")][0].table[0].team.name)}'
+          echo "=== football-data : buteurs Ligue 1 ==="
+          fd "competitions/FL1/scorers?limit=5" | jq -c '{erreur: .message, buteurs: [.scorers[]? | "\(.player.name) \(.goals)"]}'
+          echo "=== football-data : classement Premier League ==="
+          fd "competitions/PL/standings" | jq -c '{erreur: .message, types: [.standings[]?.type]}'
