@@ -1,0 +1,20 @@
+name: Test API-Football
+on: workflow_dispatch
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Tester la cle
+        env:
+          KEY: ${{ secrets.APIFOOTBALL_KEY }}
+        run: |
+          api() { curl -s -H "x-apisports-key: $KEY" "https://v3.football.api-sports.io/$1"; }
+          echo "=== Compte ==="
+          api "status" | jq -c '{errors, plan: .response.subscription.plan, requetes: .response.requests}'
+          TODAY=$(TZ=Europe/Paris date +%F)
+          echo "=== Matchs du jour $TODAY ==="
+          api "fixtures?date=$TODAY&timezone=Europe/Paris" | jq -c '{errors, nombre: .results}'
+          echo "=== Classement Ligue 1 saison 2026 ==="
+          api "standings?league=61&season=2026" | jq -c '{errors, nombre: .results, premier: .response[0].league.standings[0][0].team.name}'
+          echo "=== Buteurs Ligue 1 saison 2026 ==="
+          api "players/topscorers?league=61&season=2026" | jq -c '{errors, nombre: .results, premier: .response[0].player.name}'
