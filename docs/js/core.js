@@ -160,7 +160,11 @@ export function buildMatch(f, C) {
 
 // ---------- Absents et compositions (API-Football) ----------
 export function applyInjuries(m, injuriesJson) {
-  const list = (injuriesJson.response || []).map(x => ({ id: null, name: x.player.name, type: x.player.type, reason: x.player.reason, team: x.team.id }));
+  // La source répète parfois un même joueur : on ne le garde qu'une fois
+  const seen = new Set();
+  const list = (injuriesJson.response || [])
+    .map(x => ({ id: null, name: x.player.name, type: x.player.type, reason: x.player.reason, team: x.team.id }))
+    .filter(x => { const k = x.team + '|' + x.name; if (seen.has(k)) return false; seen.add(k); return true; });
   m.injuries = { home: list.filter(x => x.team === m.home.id), away: list.filter(x => x.team === m.away.id) };
 }
 

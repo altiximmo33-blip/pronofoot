@@ -257,6 +257,11 @@ function buildVerdict(c) {
   let code = 'skip', label = obvious ? 'Trop évident' : 'Trop imprévisible';
   if (score >= 60) { code = 'play'; label = 'Intéressant'; }
   else if (score >= 30) { code = 'watch'; label = 'À surveiller'; }
+  // Sans statistiques, aucune piste n'a de sens
+  if (c.base.method === 'defaut') {
+    tips.length = 0;
+    return { code: 'skip', label: 'Pas de statistiques', score: 0, tips, flags: [], values: [], obvious: false, easy: [] };
+  }
 
   const flags = [];
   if (gap >= 0.35) flags.push({ t: 'Gros écart', k: 'gap' });
@@ -296,7 +301,7 @@ function buildText(c, v) {
   } else if (c.base.method === 'prediction') {
     out.push('Pas de classement commun aux deux équipes (match de coupe) : l\'estimation se base sur la prédiction de la source de données.');
   } else {
-    out.push('Données statistiques insuffisantes pour ce match : l\'analyse est peu fiable.');
+    out.push('Pas de statistiques pour cette compétition dans l\'offre gratuite : aucune piste n\'est proposée. Utilisez votre projet Claude pour l\'analyser.');
   }
 
   if (m.stats && m.stats.home && m.stats.away && Math.min(m.stats.home.p, m.stats.away.p) < 4) {
