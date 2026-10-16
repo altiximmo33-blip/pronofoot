@@ -13,6 +13,7 @@
     <div class="brand"><span class="ball">⚽</span> PronoFoot</div>
     <div class="status" id="status"></div>
     <div class="actions">
+      <a class="btn ghost" href="aide.html">Aide</a>
       <button class="btn ghost" id="btn-notify">Notifications</button>
       <button class="btn" id="btn-refresh">↻ Actualiser</button>
     </div>
@@ -29,6 +30,20 @@
     <div id="error" class="banner error" hidden></div>
 
     <section id="view-matches" class="view">
+      <div class="add-bar">
+        <button class="btn" id="btn-add">＋ Ajouter des matchs analysés par Claude</button>
+        <span id="add-done" class="add-done" hidden></span>
+      </div>
+      <div id="add-panel" class="add-panel" hidden>
+        <p class="small">Dans Claude, copiez le bloc <b>PRONOFOOT</b> donné à la fin de l'analyse, puis collez-le ici. Les matchs s'ajoutent à la page avec la même présentation. Ils restent sur ce téléphone pour la journée.</p>
+        <textarea id="add-text" rows="6" placeholder='{"pronofoot":1, "date":"…", "matchs":[…]}'></textarea>
+        <div class="row">
+          <button class="btn ghost" id="add-paste">Coller</button>
+          <button class="btn" id="add-ok">Ajouter à la page</button>
+          <button class="btn ghost" id="add-cancel">Annuler</button>
+        </div>
+        <p class="small" id="add-msg" style="color:var(--bad)"></p>
+      </div>
       <div class="toolbar">
         <input id="f-search" type="search" placeholder="Rechercher une équipe…">
         <select id="f-comp"></select>

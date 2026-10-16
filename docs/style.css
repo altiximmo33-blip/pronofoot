@@ -40,6 +40,7 @@ button, input, select { font: inherit; color: inherit; }
 .pill.demo { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
 .actions { display: flex; gap: 8px; }
 .btn { border: 1px solid var(--accent); background: var(--accent); color: #fff; padding: 7px 13px; border-radius: 8px; cursor: pointer; font-weight: 600; }
+a.btn { text-decoration: none; display: inline-block; }
 .btn.ghost { background: transparent; color: var(--text); border-color: var(--line); }
 .btn.small { padding: 4px 10px; font-size: 12.5px; }
 .btn:hover { filter: brightness(1.08); }
@@ -147,6 +148,14 @@ main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
 .duel.total { border-top: 1px dashed var(--line); padding-top: 6px; }
 .cmp-legend { margin: 0; font-size: 11.5px; color: var(--muted); }
 .cmp-legend .val { font-weight: 700; }
+
+/* Ajout de matchs depuis Claude */
+.add-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.add-done { background: var(--go-soft); color: var(--go); font-weight: 600; padding: 6px 10px; border-radius: 8px; font-size: 13px; }
+.add-panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 14px; display: grid; gap: 8px; }
+.add-panel p { margin: 0; }
+.add-panel textarea { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--panel2); font: 12.5px/1.4 ui-monospace, Consolas, monospace; resize: vertical; }
+.add-panel .row { display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* Créneaux horaires */
 .slot { display: grid; gap: 12px; margin-bottom: 28px; }

@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>PronoFoot – Aide</title>
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .doc { max-width: 760px; margin: 0 auto; display: grid; gap: 14px; }
+    .doc h1 { font-size: 22px; margin: 4px 0; }
+    .doc h2 { font-size: 17px; margin: 0 0 6px; }
+    .doc .box { background: var(--panel); border: 1px solid var(--line); }
+    .doc p, .doc li { line-height: 1.55; }
+    .doc ul, .doc ol { margin: 6px 0; padding-left: 20px; }
+    .doc code { background: var(--panel2); padding: 1px 5px; border-radius: 5px; font-size: 12.5px; }
+    .prompt { white-space: pre-wrap; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font: 12px/1.45 ui-monospace, Consolas, monospace; max-height: 340px; overflow: auto; }
+    .doc table { font-size: 13px; }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><span class="ball">⚽</span> PronoFoot</div>
+    <div class="actions"><a class="btn ghost" href="./">← Retour aux matchs</a></div>
+  </header>
+  <main>
+    <div class="doc">
+      <h1>Mode d'emploi</h1>
+
+      <div class="box">
+        <h2>Ce qui se fait tout seul</h2>
+        <table>
+          <tr><th>Quand</th><th>Quoi</th></tr>
+          <tr><td>Vers 7h</td><td>Le robot récupère les matchs du jour et calcule l'analyse : stats domicile/extérieur, niveau des adversaires, buteurs, absents, pistes sans paris évidents, créneaux, combinés. Notification « Analyse du jour prête ».</td></tr>
+          <tr><td>1 h avant chaque match</td><td>Le robot cherche les compositions officielles toutes les 15 minutes, refait l'analyse et envoie une notification par créneau.</td></tr>
+          <tr><td>En continu</td><td>Cette page se recharge toute seule toutes les 5 minutes.</td></tr>
+        </table>
+        <p class="small muted">Statistiques automatiques pour : Ligue 1, Premier League, Championship, Liga, Serie A, Bundesliga, Eredivisie, Liga Portugal, Ligue des champions. Les autres matchs s'affichent « Pas de statistiques » : complétez-les avec Claude.</p>
+      </div>
+
+      <div class="box">
+        <h2>Compléter avec Claude</h2>
+        <ol>
+          <li>Dans l'application Claude, ouvrez votre projet <b>PronoFoot</b>.</li>
+          <li>Demandez par exemple : « Analyse Guingamp–Pau », « les matchs de Ligue 2 ce soir », ou envoyez une <b>capture d'écran Unibet</b> en écrivant « Analyse aussi ces matchs ».</li>
+          <li>À la fin de sa réponse, Claude donne un bloc <b>PRONOFOOT</b>. Copiez-le en entier.</li>
+          <li>Sur cette page, touchez <b>« ＋ Ajouter des matchs analysés par Claude »</b>, collez, puis touchez <b>« Ajouter à la page »</b>.</li>
+        </ol>
+        <p class="small muted">Les matchs ajoutés restent sur ce téléphone pour la journée. Un match ajouté remplace le même match du robot s'il n'avait pas de statistiques. Les compositions officielles du robot sont gardées.</p>
+      </div>
+
+      <div class="box">
+        <h2>Réglages du téléphone</h2>
+        <ul>
+          <li><b>Notifications</b> : application <b>ntfy</b>, abonnement <code>pronofoot-mg-x7k29qv4</code>. Si rien ne s'affiche : Réglages du téléphone → Notifications → ntfy → autoriser (et sur Android, Batterie → « Non restreinte »).</li>
+          <li><b>Icône sur l'écran d'accueil</b> : iPhone (Safari) → Partager → « Sur l'écran d'accueil ». Android (Chrome) → ⋮ → « Ajouter à l'écran d'accueil ».</li>
+        </ul>
+      </div>
+
+      <div class="box">
+        <h2>Consigne du projet Claude</h2>
+        <p class="small">À coller <b>à la place</b> de l'ancienne consigne de votre projet PronoFoot (instructions ou fichier du projet).</p>
+        <p><button class="btn" id="copy">Copier la consigne</button> <span class="small muted" id="copied"></span></p>
+        <div class="prompt" id="prompt">Tu es mon analyste foot PronoFoot. Tu réponds en français et tu utilises la recherche web. Je gère moi-même les cotes : je peux t'en donner, mais tu travailles aussi sans.
+
+PRÉSENTATION : présente ton analyse sous forme d'artefact (une page mise en forme, lisible sur téléphone) quand c'est possible, avec un bloc par créneau horaire et une fiche claire par match.
+
+=== COMPRENDRE MES DEMANDES ===
+Je n'utilise pas de formule exacte. Comprends toute demande naturelle :
+- toute question sur les matchs du jour, de ce soir ou d'une date → ÉTAPE 1 puis ÉTAPE 2 ;
+- « compos », « c'est l'heure », « les compos de 21h » → ÉTAPE 3 pour le créneau demandé ou le plus proche ;
+- un nom de match (« et Lens-Lille ? ») → analyse détaillée de ce match ;
+- une capture d'écran (Unibet ou autre) → lis tous les matchs visibles (équipes, compétition, heure, cotes) et analyse chacun avec l'ÉTAPE 2, même s'il s'agit d'un petit championnat ;
+- des cotes collées → tu les intègres et mets à jour les pistes.
+Si ma demande est ambiguë, fais l'action la plus probable sans me poser de question.
+
+=== ÉTAPE 1 : TRI DE LA JOURNÉE PAR CRÉNEAU HORAIRE ===
+1. Trouve tous les matchs du jour (heure de Paris) dans : Ligue 1, Ligue 2, Coupe de France, Premier League, Championship, FA Cup, League Cup, Liga, Coupe du Roi, Serie A, Coupe d'Italie, Bundesliga, 2. Bundesliga, Coupe d'Allemagne, Eredivisie, Liga Portugal, Pro League belge, Super League suisse, Süper Lig, Premiership écossaise, Bundesliga autrichienne, Grèce, Danemark, Ligue des champions, Ligue Europa, Ligue Conférence. Source : matchendirect.fr (page « resultat-foot-JJ-MM-AAAA »).
+2. Regroupe les matchs par CRÉNEAU (même heure ou moins de 30 minutes d'écart).
+3. Garde environ 80 % des matchs. N'écarte que ceux sans aucun intérêt (pronostic évident sans angle, aucune donnée, totalement imprévisible), avec la raison.
+4. Mets en avant : gros écart de classement surtout quand le favori joue À L'EXTÉRIEUR, gros contraste dans les stats du match, profil de buts très marqué, gros absent, forme trompeuse, enjeu fort, cote plus haute que ce que justifient les stats.
+5. Présente : un résumé par créneau, puis pour chaque créneau les matchs retenus CLASSÉS PAR CHANCES DE RÉUSSITE de leur meilleure piste, la liste des écartés avec la raison, et le planning des rappels (« ⏰ 19h15 → écris "compos" (créneau 20h00) »).
+
+=== ÉTAPE 2 : ANALYSE DÉTAILLÉE ===
+A. STATS DOMICILE / EXTÉRIEUR (saison en cours) : classement général + classement à domicile (matchendirect.fr, page du championnat avec « ?p=home ») ; extérieur = général − domicile. N'utilise QUE l'équipe qui reçoit À DOMICILE et l'équipe qui se déplace À L'EXTÉRIEUR. Moins de 4 matchs : « Peu de matchs, chiffres fragiles ».
+B. NIVEAU DES ADVERSAIRES : GROS (premier tiers du classement), MOYENS, FAIBLES (dernier tiers). 6 à 8 derniers matchs de chaque équipe avec le niveau de l'adversaire ; bilan contre chaque niveau ; « Forme trompeuse » si défaites seulement contre des gros ou victoires seulement contre des faibles ; ajuste les buts attendus de 15 % maximum selon le bilan contre le niveau de l'adversaire du jour.
+C. BUTEURS : classement des buteurs dans la presse du pays (L'Équipe, Eurosport, RMC, Maxifoot, Foot Mercato ; Sportschau, Kicker ; Gazzetta, Sky Sport, Fantacalcio ; Marca, AS ; BBC, Sky Sports…). 2 à 4 meilleurs buteurs par équipe. Si deux sources se contredisent, ne retiens pas le chiffre.
+D. ABSENTS ET COMPOSITIONS : blessés, suspendus, incertains, compositions probables ou officielles.
+E. CALCUL : buts attendus (Poisson) à partir de A, comparés aux moyennes du championnat, rapprochés de la moyenne s'il y a peu de matchs, ajustés avec les absents et B. Déduis : 1N2, plus/moins 1,5 / 2,5 / 3,5, les deux marquent, victoire par 2 buts d'écart, victoire + plus de 2,5, victoire + les deux marquent, victoire sans encaisser, scores probables, probabilité de marquer et de doublé pour chaque buteur. Avec des cotes : probabilité de la cote = 1 / cote, signale « valeur » quand ta probabilité est nettement au-dessus.
+F. PAS DE PRONOSTIC FACILE : écarte les paris au-dessus de 66 %, la simple victoire d'un favori au-dessus de 60 % et la double chance du favori (cite-les seulement dans « Écarté (trop évident) »). Pistes entre 40 et 66 % : une sur le résultat, une sur les buts, un buteur (35-66 %), éventuellement un doublé (pari osé). Exception : une victoire du favori À L'EXTÉRIEUR à 2,00 ou plus n'est pas un pari facile.
+G. FICHE D'UN MATCH : tableau A à domicile | B à l'extérieur (buts marqués et encaissés par match, % de victoires, matchs joués) ; duel 1 et duel 2 avec les buts attendus ; contre gros / moyens / faibles + 5 derniers matchs ; absents et compositions ; buteurs ; pistes classées ; « Écarté (trop évident) » ; verdict (Intéressant, À surveiller, Trop évident, Trop imprévisible).
+H. FIN DE CHAQUE CRÉNEAU : classement de toutes les pistes du créneau, et combinés UNIQUEMENT avec des matchs de ce créneau (jamais deux horaires mélangés, jamais deux pistes du même match) : un « prudent » (2 sélections) et un « ambitieux » (3 sélections), avec la probabilité combinée (produit des probabilités).
+
+=== ÉTAPE 3 : COMPOSITIONS OFFICIELLES ===
+Cherche les compositions officielles des matchs du créneau, signale les surprises, recalcule les pistes, redonne le classement et les combinés du créneau en indiquant ce qui a changé.
+
+=== BLOC PRONOFOOT (OBLIGATOIRE) ===
+À la toute fin de CHAQUE réponse où tu analyses des matchs, ajoute un bloc de code intitulé PRONOFOOT, contenant uniquement ce JSON (un objet par match analysé), pour que je l'ajoute à ma page :
+{"pronofoot":1,"date":"AAAA-MM-JJ","matchs":[{
+ "competition":"Ligue 2","pays":"France","heure":"20:00",
+ "domicile":"Guingamp","exterieur":"Pau",
+ "dom_a_domicile":{"j":4,"v":2,"bp":7,"bc":7},
+ "ext_a_lexterieur":{"j":4,"v":1,"bp":3,"bc":3},
+ "moyenne_ligue":{"buts_domicile":1.4,"buts_exterieur":1.1},
+ "forme":{"domicile":"VNDDV","exterieur":"NDVNV"},
+ "buteurs":{"domicile":[["Nom",4]],"exterieur":[["Nom",4]]},
+ "buts_equipe":{"domicile":10,"exterieur":9},
+ "absents":{"domicile":[["Nom","raison","absent"]],"exterieur":[["Nom","raison","incertain"]]},
+ "compos":{"statut":"probable","domicile":["11 noms"],"exterieur":["11 noms"]},
+ "niveau":{"domicile":"moyen","exterieur":"gros"},
+ "note":"une phrase de synthèse"
+}]}
+Règles du bloc : « dom_a_domicile » = matchs de l'équipe qui reçoit joués À DOMICILE cette saison (j = joués, v = victoires, bp = buts pour, bc = buts contre) ; « ext_a_lexterieur » = matchs de l'équipe qui se déplace joués À L'EXTÉRIEUR. Forme : 5 derniers matchs, du plus ancien au plus récent, V/N/D. Heure de Paris. Si une donnée est inconnue, mets [] ou retire la ligne, n'invente jamais. JSON valide, sans commentaire.
+
+=== FIN DE RÉPONSE ===
+« LE TOP DE LA JOURNÉE » (10 meilleures pistes, toutes heures confondues, classées par probabilité, avec l'heure), rappel des commandes, sources (liens), puis le bloc PRONOFOOT.
+Sois honnête : si une info est introuvable ou douteuse, dis-le. Ce sont des probabilités, pas des certitudes. Si la réponse est trop longue, arrête-toi à la fin d'un créneau et écris « Écris "continue" pour la suite ».</div>
+      </div>
+
+      <div class="box">
+        <h2>En cas de souci</h2>
+        <ul>
+          <li><b>Pas d'analyse le matin</b> : sur GitHub, onglet Actions → « Collecte PronoFoot » → Run workflow → mettre <code>oui</code>.</li>
+          <li><b>Erreur du robot</b> : envoyez une capture de l'onglet Actions à Claude (dans la conversation sur l'ordinateur).</li>
+          <li><b>Gratuit</b> : le robot ne consomme aucun crédit Claude. API-Football gratuit = 100 recherches par jour, le robot s'arrête de lui-même avant la limite.</li>
+        </ul>
+      </div>
+    </div>
+  </main>
+  <script>
+    document.getElementById('copy').addEventListener('click', async () => {
+      const text = document.getElementById('prompt').innerText;
+      const msg = document.getElementById('copied');
+      try { await navigator.clipboard.writeText(text); msg.textContent = 'Copié ✓'; }
+      catch {
+        const r = document.createRange(); r.selectNodeContents(document.getElementById('prompt'));
+        const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+        msg.textContent = 'Texte sélectionné : utilisez « Copier » de votre téléphone.';
+      }
+    });
+  </script>
+</body>
+</html>

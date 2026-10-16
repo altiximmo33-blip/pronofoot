@@ -1,5 +1,6 @@
 import { COMPETITIONS } from './config.js';
-import { state, onChange, start, loadAll, toggleHidden, clearAlerts, saveSettings, testKeys } from './engine.js';
+import * as E from './engine.js';
+const { state, onChange, start, loadAll, toggleHidden, clearAlerts, saveSettings, testKeys } = E;
 import { load, save } from './store.js';
 import { SOURCES } from './today.js';
 
@@ -191,7 +192,34 @@ $('#match-list').addEventListener('click', e => {
   const id = b.closest('.card').dataset.id;
   if (b.dataset.act === 'toggle') { expanded.has(id) ? expanded.delete(id) : expanded.add(id); renderMatches(); }
   if (b.dataset.act === 'hide') toggleHidden(id);
+  if (b.dataset.act === 'remove' && E.removeExtra) E.removeExtra(id);
 });
+
+// --- Ajout de matchs analysés par Claude (version en ligne uniquement) ---------------
+const addPanel = $('#add-panel');
+if (addPanel && E.addExtras) {
+  $('#btn-add').addEventListener('click', () => { addPanel.hidden = !addPanel.hidden; $('#add-msg').textContent = ''; if (!addPanel.hidden) $('#add-text').focus(); });
+  $('#add-cancel').addEventListener('click', () => { addPanel.hidden = true; });
+  $('#add-paste').addEventListener('click', async () => {
+    try { $('#add-text').value = await navigator.clipboard.readText(); }
+    catch { $('#add-msg').textContent = 'Collage automatique refusé par le téléphone : appuyez longuement dans la zone, puis « Coller ».'; }
+  });
+  $('#add-ok').addEventListener('click', () => {
+    try {
+      const n = E.addExtras($('#add-text').value);
+      $('#add-text').value = '';
+      addPanel.hidden = true;
+      $('#add-msg').textContent = '';
+      alertBanner(`${n} match${n > 1 ? 's' : ''} ajouté${n > 1 ? 's' : ''} depuis Claude.`);
+    } catch (err) { $('#add-msg').textContent = err.message; }
+  });
+}
+function alertBanner(text) {
+  const el = $('#add-done');
+  if (!el) return;
+  el.textContent = text; el.hidden = false;
+  setTimeout(() => { el.hidden = true; }, 5000);
+}
 
 function kickLabel(m) {
   const mins = Math.round((m.kickoff - Date.now()) / 60000);
@@ -256,7 +284,7 @@ function cardHtml(m) {
     ${compareHtml(m, a)}
     <div class="card-foot">
       <button class="link" data-act="toggle">${isOpen ? 'Masquer l\'analyse ▲' : 'Analyse complète ▼'}</button>
-      <button class="link muted" data-act="hide">${hidden ? '👁 Réafficher ce match' : '🚫 Masquer ce match'}</button>
+      <span>${m.source === 'claude' ? '<button class="link muted" data-act="remove">🗑 Retirer</button> ' : ''}<button class="link muted" data-act="hide">${hidden ? '👁 Réafficher ce match' : '🚫 Masquer ce match'}</button></span>
     </div>
     ${isOpen ? detailHtml(m, a) : ''}
   </article>`;
