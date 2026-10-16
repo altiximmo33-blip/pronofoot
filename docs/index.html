@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>PronoFoot</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
+  <link rel="stylesheet" href="style.css">
+  <style>#tabs [data-tab="settings"], #btn-notify { display: none; }</style>
+</head>
+<body>
+  <header class="top">
+    <div class="brand"><span class="ball">⚽</span> PronoFoot</div>
+    <div class="status" id="status"></div>
+    <div class="actions">
+      <button class="btn ghost" id="btn-notify">Notifications</button>
+      <button class="btn" id="btn-refresh">↻ Actualiser</button>
+    </div>
+  </header>
+
+  <nav class="tabs" id="tabs">
+    <button data-tab="matches" class="active">Matchs <span class="count" id="c-matches"></span></button>
+    <button data-tab="alerts">Alertes <span class="count hot" id="c-alerts"></span></button>
+    <button data-tab="settings">Paramètres</button>
+  </nav>
+
+  <main>
+    <div id="demo-banner" class="banner" hidden></div>
+    <div id="error" class="banner error" hidden></div>
+
+    <section id="view-matches" class="view">
+      <div class="toolbar">
+        <input id="f-search" type="search" placeholder="Rechercher une équipe…">
+        <select id="f-comp"></select>
+        <select id="f-verdict">
+          <option value="">Tous les verdicts</option>
+          <option value="play">Intéressants</option>
+          <option value="watch">À surveiller</option>
+          <option value="skip">Sans intérêt</option>
+        </select>
+        <select id="f-sort">
+          <option value="slot">Par créneau horaire</option>
+          <option value="time">Trier par heure</option>
+          <option value="score">Trier par intérêt</option>
+        </select>
+        <label class="check"><input type="checkbox" id="f-hidden"> Voir les masqués <span id="c-hidden"></span></label>
+      </div>
+      <div class="summary" id="summary"></div>
+      <div id="match-list"></div>
+    </section>
+
+    <section id="view-alerts" class="view" hidden>
+      <div class="toolbar"><span class="muted">Ce que le robot a fait aujourd'hui : analyse du matin, puis compositions officielles par créneau.</span><button class="btn ghost" id="btn-clear-alerts">Masquer</button></div>
+      <div id="alert-list"></div>
+    </section>
+
+    <section id="view-settings" class="view" hidden></section>
+  </main>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
