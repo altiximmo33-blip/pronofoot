@@ -1,0 +1,42 @@
+name: Collecte PronoFoot
+on:
+  schedule:
+    # Toutes les 15 minutes de 7h à 0h45 (heure de Paris en été), en heure UTC
+    - cron: '*/15 5-22 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Refaire la collecte du jour (oui/non)'
+        default: 'non'
+permissions:
+  contents: write
+concurrency:
+  group: collecte
+  cancel-in-progress: false
+jobs:
+  collecte:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Collecter
+        run: node scripts/collect.mjs
+        env:
+          APIFOOTBALL_KEY: ${{ secrets.APIFOOTBALL_KEY }}
+          FOOTBALLDATA_KEY: ${{ secrets.FOOTBALLDATA_KEY }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          PAGE_URL: https://altiximmo33-blip.github.io/pronofoot/
+          FORCE: ${{ github.event.inputs.force }}
+      - name: Enregistrer
+        run: |
+          git config user.name "pronofoot-robot"
+          git config user.email "pronofoot-robot@users.noreply.github.com"
+          git add docs/data
+          if git diff --cached --quiet; then
+            echo "Rien à enregistrer"
+          else
+            git commit -m "Collecte $(TZ=Europe/Paris date '+%F %H:%M')"
+            git push
+          fi
