@@ -2,7 +2,7 @@ name: Collecte PronoFoot
 on:
   schedule:
     # Toutes les 15 minutes de 7h à 0h45 (heure de Paris en été), en heure UTC
-    - cron: '*/15 5-22 * * *'
+    - cron: '7,17,27,37,47,57 5-22 * * *'
   workflow_dispatch:
     inputs:
       force:
