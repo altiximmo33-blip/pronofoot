@@ -4,23 +4,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: Tester les cles
+      - name: Tester les resultats passes
         env:
           KEY: ${{ secrets.APIFOOTBALL_KEY }}
-          FD: ${{ secrets.FOOTBALLDATA_KEY }}
         run: |
           api() { curl -s -H "x-apisports-key: $KEY" "https://v3.football.api-sports.io/$1"; }
-          fd() { curl -s -H "X-Auth-Token: $FD" "https://api.football-data.org/v4/$1"; }
-          TODAY=$(TZ=Europe/Paris date +%F)
-          FID=$(api "fixtures?date=$TODAY&timezone=Europe/Paris" | jq '[.response[] | select(.league.id==61)][0].fixture.id')
-          echo "=== Match Ligue 1 du jour : $FID ==="
-          echo "=== API-Football : compos ==="
-          api "fixtures/lineups?fixture=$FID" | jq -c '{errors, nombre: .results}'
-          echo "=== API-Football : absents ==="
-          api "injuries?fixture=$FID" | jq -c '{errors, nombre: .results, exemple: .response[0].player.name}'
-          echo "=== football-data : classement dom/ext Ligue 1 ==="
-          fd "competitions/FL1/standings" | jq -c '{erreur: .message, saison: .season.startDate, types: [.standings[]?.type], premier_domicile: ([.standings[]? | select(.type=="HOME")][0].table[0].team.name)}'
-          echo "=== football-data : buteurs Ligue 1 ==="
-          fd "competitions/FL1/scorers?limit=5" | jq -c '{erreur: .message, buteurs: [.scorers[]? | "\(.player.name) \(.goals)"]}'
-          echo "=== football-data : classement Premier League ==="
-          fd "competitions/PL/standings" | jq -c '{erreur: .message, types: [.standings[]?.type]}'
+          for D in 2026-08-16 2026-09-20 2026-10-11; do
+            echo "=== Resultats du $D ==="
+            api "fixtures?date=$D&timezone=Europe/Paris" | jq -c '{errors, total: .results, termines: ([.response[]? | select(.fixture.status.short=="FT")] | length), ligue2: ([.response[]? | select(.league.id==62 and .fixture.status.short=="FT")] | length), turquie: ([.response[]? | select(.league.id==203 and .fixture.status.short=="FT")] | length), exemple: ([.response[]? | select(.league.id==62)][0] | "\(.teams.home.name) \(.goals.home)-\(.goals.away) \(.teams.away.name)")}'
+          done
