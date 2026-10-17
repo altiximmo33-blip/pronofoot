@@ -287,11 +287,14 @@ function compactHtml(m) {
   const time = new Date(m.kickoff).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
   const official = m.lineups && m.lineups.home && m.lineups.home.status === 'officielle';
   const abs = ((m.injuries && m.injuries.home) || []).length + ((m.injuries && m.injuries.away) || []).length;
+  const mins = (m.kickoff - Date.now()) / 60000;
+  const compos = official ? '<span class="chip ok">✓ Compos officielles</span>'
+    : mins <= 45 && mins > 0 ? '<span class="chip warn">⏳ Compos attendues</span>'
+    : '<span class="chip">Compos probables</span>';
   const chips = [
-    official ? '<span class="chip ok">✓ Compos</span>' : '',
-    ...v.flags.slice(0, 2).map(f => `<span class="chip">${esc(f.t)}</span>`),
+    compos,
+    ...v.flags.filter(f => f.t !== 'Peu de matchs').slice(0, 2).map(f => `<span class="chip">${esc(f.t)}</span>`),
     abs ? `<span class="chip">${abs} absent${abs > 1 ? 's' : ''}</span>` : '',
-    m.source === 'claude' ? '<span class="chip">via Claude</span>' : '',
   ].join('');
   return `<article class="card compact v-${v.code}${state.hidden.has(m.id) ? ' is-hidden' : ''}" data-id="${esc(m.id)}">
     <button class="compact-main" data-act="open" aria-label="Ouvrir la fiche du match">
