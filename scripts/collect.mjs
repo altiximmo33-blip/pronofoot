@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeMatch } from '../docs/js/model.js';
 import { compByAf } from '../docs/js/config.js';
-import { FD_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks } from '../docs/js/core.js';
+import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnFindEvent, applyEspnLineups } from '../docs/js/core.js';
 
 const AF_KEY = process.env.APIFOOTBALL_KEY;
 const FD_KEY = process.env.FOOTBALLDATA_KEY;
@@ -51,6 +51,31 @@ async function fd(p) {
   const j = await r.json();
   if (!r.ok) throw new Error(`football-data ${p} : ${j.message || r.status}`);
   return j;
+}
+
+// ESPN : gratuit, sans clé ni quota (API non officielle : si elle change, on retombe sur API-Football)
+const ESPN_SITE = 'https://site.api.espn.com/apis/site/v2/sports/soccer/';
+async function espn(url) {
+  for (let i = 0; i < 2; i++) {
+    try {
+      const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 PronoFoot' } });
+      if (r.ok) return await r.json();
+    } catch { /* nouvel essai */ }
+    await sleep(800);
+  }
+  throw new Error('ESPN indisponible : ' + url);
+}
+
+async function espnLoadCompetition(code) {
+  const st = await espn(`https://site.api.espn.com/apis/v2/sports/soccer/${code}/standings`);
+  const groups = st.children || [st];
+  const ids = groups.flatMap(g => ((g.standings && g.standings.entries) || []).map(e => e.team.id));
+  const schedules = [];
+  for (const id of ids) {
+    try { schedules.push(await espn(`${ESPN_SITE}${code}/teams/${id}/schedule`)); } catch (e) { console.warn(e.message); }
+    await sleep(120);
+  }
+  return espnCompetition(st, schedules);
 }
 
 async function notify(title, message) {
@@ -145,14 +170,24 @@ async function daily(today) {
 
   const comps = {};
   for (const lid of [...new Set(list.map(f => f.league.id))]) {
+    // 1) football-data.org (avec les buteurs) pour les grandes compétitions
     const code = FD_CODES[lid];
-    if (!code) continue;
+    if (code) {
+      try {
+        const st = await fd(`competitions/${code}/standings`);
+        const mt = await fd(`competitions/${code}/matches?status=FINISHED`);
+        const sc = await fd(`competitions/${code}/scorers?limit=80`);
+        comps[lid] = buildCompetition(st, mt, sc);
+        console.log(`${code} : ${comps[lid].rows.length} équipes (football-data)`);
+        continue;
+      } catch (e) { console.warn(e.message); }
+    }
+    // 2) ESPN pour les autres (Ligue 2, 2. Bundesliga, Turquie, Autriche, coupes d'Europe…)
+    const ecode = ESPN_CODES[lid];
+    if (!ecode) continue;
     try {
-      const st = await fd(`competitions/${code}/standings`);
-      const mt = await fd(`competitions/${code}/matches?status=FINISHED`);
-      const sc = await fd(`competitions/${code}/scorers?limit=80`);
-      comps[lid] = buildCompetition(st, mt, sc);
-      console.log(`${code} : ${comps[lid].rows.length} équipes`);
+      const C = await espnLoadCompetition(ecode);
+      if (C.rows.length && C.avg) { comps[lid] = C; console.log(`${ecode} : ${C.rows.length} équipes (ESPN)`); }
     } catch (e) { console.warn(e.message); }
   }
 
@@ -191,19 +226,44 @@ function dailySummary(matches) {
 }
 
 // ---------- Compositions officielles ----------
-// Les compositions sortent au mieux 1 h avant : on cherche de 45 à 20 min avant le match,
-// à chaque passage (toutes les 5 min), tous les matchs concernés en une seule requête.
-// (5 essais par créneau horaire : tient dans le quota gratuit même un samedi chargé)
+// Compositions, à chaque passage (toutes les 5 min) :
+// 1) ESPN, sans quota : de 60 min avant jusqu'au coup d'envoi ;
+// 2) API-Football en secours (quota limité) : de 45 à 20 min avant, en une seule requête groupée.
+const ESPN_FROM_MIN = 60;
 const LINEUPS_FROM_MIN = 45, LINEUPS_UNTIL_MIN = 20;
+
+async function espnLineups(due) {
+  const found = [], boards = {};
+  const parisDay = t => new Date(t).toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' }).replace(/-/g, '');
+  for (const m of due) {
+    const code = ESPN_CODES[m.comp && m.comp.af];
+    if (!code) continue;
+    try {
+      const day = parisDay(m.kickoff), key = code + day;
+      boards[key] = boards[key] || await espn(`${ESPN_SITE}${code}/scoreboard?dates=${day}`);
+      const id = espnFindEvent(boards[key], m.home.name, m.away.name);
+      if (!id) continue;
+      if (applyEspnLineups(m, await espn(`${ESPN_SITE}${code}/summary?event=${id}`))) found.push(m);
+    } catch (e) { console.warn(e.message); }
+  }
+  return found;
+}
 
 async function lineupsPass(state) {
   const now = Date.now();
   const isOfficial = m => m.lineups && m.lineups.home && m.lineups.home.status === 'officielle';
-  const due = state.matches
-    .filter(m => !isOfficial(m) && m.kickoff - now <= LINEUPS_FROM_MIN * 60000 && m.kickoff - now > LINEUPS_UNTIL_MIN * 60000);
-  if (!due.length) return false;
-  console.log(`Compositions recherchées pour ${due.length} match(s)`);
+  const inWindow = (m, from, until) => m.kickoff - now <= from * 60000 && m.kickoff - now > until * 60000;
   const found = [];
+
+  const dueEspn = state.matches.filter(m => !isOfficial(m) && inWindow(m, ESPN_FROM_MIN, -5));
+  if (dueEspn.length) {
+    const f = await espnLineups(dueEspn);
+    found.push(...f);
+    console.log(`ESPN : ${f.length}/${dueEspn.length} composition(s) trouvée(s)`);
+  }
+
+  const due = state.matches.filter(m => !isOfficial(m) && inWindow(m, LINEUPS_FROM_MIN, LINEUPS_UNTIL_MIN));
+  if (due.length) console.log(`API-Football : compositions recherchées pour ${due.length} match(s)`);
   for (let i = 0; i < due.length; i += 20) {
     if (afUsed >= AF_BUDGET) break;
     const chunk = due.slice(i, i + 20);

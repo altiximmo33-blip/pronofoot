@@ -194,6 +194,73 @@ export function groupSlots(matches) {
   return slots;
 }
 
+// ---------- ESPN : deuxième source (compositions + résultats de la saison) ----------
+// Codes ESPN des compétitions suivies (identifiant API-Football → code ESPN)
+export const ESPN_CODES = {
+  61: 'fra.1', 62: 'fra.2', 66: 'fra.coupe_de_france', 39: 'eng.1', 40: 'eng.2', 45: 'eng.fa', 48: 'eng.league_cup',
+  140: 'esp.1', 143: 'esp.copa_del_rey', 135: 'ita.1', 137: 'ita.coppa_italia', 78: 'ger.1', 79: 'ger.2', 81: 'ger.dfb_pokal',
+  88: 'ned.1', 94: 'por.1', 144: 'bel.1', 207: 'sui.1', 203: 'tur.1', 179: 'sco.1', 218: 'aut.1', 197: 'gre.1', 119: 'den.1',
+  2: 'uefa.champions', 3: 'uefa.europa', 848: 'uefa.europa.conf',
+};
+
+const espnTeam = t => ({ id: 'espn-' + t.id, name: t.displayName || t.name, shortName: t.shortDisplayName || t.name, tla: t.abbreviation });
+
+// Transforme le classement + les calendriers d'équipes ESPN au format attendu par buildCompetition
+export function espnCompetition(standingsJson, schedulesJson) {
+  const groups = standingsJson.children || [standingsJson];
+  const table = [];
+  groups.forEach(g => ((g.standings && g.standings.entries) || []).forEach(e => {
+    const rank = (e.stats || []).find(s => s.name === 'rank');
+    table.push({ team: espnTeam(e.team), position: rank ? +rank.value : table.length + 1 });
+  }));
+  const seen = new Set(), matches = [];
+  for (const s of schedulesJson) for (const ev of (s && s.events) || []) {
+    const c = ev.competitions && ev.competitions[0];
+    if (!c || !c.status || !c.status.type || !c.status.type.completed || seen.has(ev.id)) continue;
+    const h = c.competitors.find(x => x.homeAway === 'home'), a = c.competitors.find(x => x.homeAway === 'away');
+    if (!h || !a) continue;
+    const sc = x => x.score && (x.score.value != null ? +x.score.value : +x.score.displayValue);
+    seen.add(ev.id);
+    matches.push({ utcDate: ev.date, homeTeam: espnTeam(h.team), awayTeam: espnTeam(a.team), score: { fullTime: { home: sc(h), away: sc(a) } } });
+  }
+  // Journée en cours estimée : nombre de matchs joués par équipe en moyenne
+  const matchday = table.length ? Math.round((matches.length * 2) / table.length) : null;
+  return buildCompetition({ standings: [{ type: 'TOTAL', table }], season: { currentMatchday: matchday } }, { matches }, null);
+}
+
+// Retrouve un match API-Football dans le programme ESPN du jour
+export function espnFindEvent(scoreboardJson, homeName, awayName) {
+  for (const ev of scoreboardJson.events || []) {
+    const c = ev.competitions && ev.competitions[0];
+    if (!c) continue;
+    const h = c.competitors.find(x => x.homeAway === 'home'), a = c.competitors.find(x => x.homeAway === 'away');
+    if (!h || !a) continue;
+    const rowsH = [espnTeam(h.team)], rowsA = [espnTeam(a.team)];
+    if (findTeam(homeName, rowsH) && findTeam(awayName, rowsA)) return ev.id;
+  }
+  return null;
+}
+
+// Compositions ESPN (11 titulaires + remplaçants) appliquées à un match
+export function applyEspnLineups(m, summaryJson) {
+  const rs = summaryJson.rosters || [];
+  const conv = r => {
+    const players = r.roster || [];
+    const xi = players.filter(p => p.starter);
+    if (xi.length < 11) return null;
+    const name = p => (p.athlete && (p.athlete.displayName || p.athlete.fullName)) || '';
+    return {
+      status: 'officielle', formation: r.formation || '', source: 'ESPN',
+      startXI: xi.map(p => ({ id: null, name: name(p), pos: p.position && p.position.abbreviation })),
+      subs: players.filter(p => !p.starter).map(p => ({ id: null, name: name(p), pos: p.position && p.position.abbreviation })),
+    };
+  };
+  const h = rs.find(r => r.homeAway === 'home'), a = rs.find(r => r.homeAway === 'away');
+  const lh = h && conv(h), la = a && conv(a);
+  if (lh && la) { m.lineups = { home: lh, away: la }; return true; }
+  return false;
+}
+
 // ---------- Vérification d'une piste une fois le score connu ----------
 export function tipResult(key, h, a) {
   const t = h + a;
