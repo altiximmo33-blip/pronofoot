@@ -45,12 +45,29 @@ export async function loadAll() {
     state.alerts = (d.events || []).map(e => ({ id: e.t + e.title, ...e }));
     state.lastUpdate = Date.parse(d.updatedAt || d.generatedAt);
     state.error = null;
+    await loadBilan();
     buildBanner();
   } catch (e) {
     state.error = e.message;
   }
   state.loading = false;
   emit();
+}
+
+// --- Bilan : résultats des pistes des jours passés (préparé par le robot) ---
+async function loadBilan() {
+  try {
+    const r = await fetch('data/bilan.json?t=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return;
+    const b = await r.json();
+    const rates = {}, top = { n: 0, ok: 0 };
+    for (const d of b.days || []) for (const m of d.matches) {
+      m.picks.forEach(p => { const x = rates[p.key] = rates[p.key] || { n: 0, ok: 0, label: p.label }; x.n++; if (p.ok) x.ok++; });
+      if (m.top && m.picks[0]) { top.n++; if (m.picks[0].ok) top.ok++; }
+    }
+    Object.values(rates).forEach(x => { x.rate = x.ok / x.n; });
+    state.bilan = b; state.bilanRates = rates; state.bilanTop = top;
+  } catch { /* pas encore de bilan */ }
 }
 
 // --- Matchs ajoutés depuis Claude (gardés dans ce navigateur, pour la journée) ---

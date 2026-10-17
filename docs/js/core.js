@@ -119,7 +119,8 @@ function tierAnalysis(name, team, oppTier, C) {
 export function buildMatch(f, C) {
   const comp = compByAf[f.league.id];
   const m = {
-    id: 'af-' + f.fixture.id, fixtureId: f.fixture.id, source: 'auto', comp, round: f.league.round,
+    id: 'af-' + f.fixture.id, fixtureId: f.fixture.id, source: 'auto', comp,
+    round: String(f.league.round || '').replace(/Regular Season - (\d+)/, 'Journée $1').replace(/League Stage - (\d+)/, 'Phase de ligue, journée $1'),
     kickoff: Date.parse(f.fixture.date), status: f.fixture.status.short,
     home: { id: f.teams.home.id, name: f.teams.home.name, logo: f.teams.home.logo },
     away: { id: f.teams.away.id, name: f.teams.away.name, logo: f.teams.away.logo },
@@ -191,6 +192,62 @@ export function groupSlots(matches) {
     else slots.push({ start: m.kickoff, matches: [m] });
   }
   return slots;
+}
+
+// ---------- Vérification d'une piste une fois le score connu ----------
+export function tipResult(key, h, a) {
+  const t = h + a;
+  const rules = {
+    '1': h > a, 'N': h === a, '2': a > h, '1N': h >= a, 'N2': a >= h,
+    O15: t > 1.5, O25: t > 2.5, U25: t < 2.5, O35: t > 3.5, U15: t < 1.5,
+    BTTS: h > 0 && a > 0, NBTTS: h === 0 || a === 0, H2G: h >= 2, A2G: a >= 2,
+    'H2+': h - a >= 2, 'A2+': a - h >= 2, '1O25': h > a && t > 2.5, '2O25': a > h && t > 2.5,
+    '1BTTS': h > a && a > 0, '2BTTS': a > h && h > 0, '1CS': h > a && a === 0, '2CS': a > h && h === 0,
+  };
+  return key in rules ? rules[key] : null;
+}
+
+// Pourquoi une piste a échoué : comparaison buts attendus / buts marqués
+export function failReason(m, lh, la, h, a) {
+  const parts = [];
+  if (h - lh <= -1.2) parts.push(`attaque de ${m.home.name} surestimée (${lh.toFixed(1)} but attendu, ${h} marqué)`);
+  if (h - lh >= 1.5) parts.push(`défense de ${m.away.name} plus faible que prévu (${h} buts encaissés pour ${lh.toFixed(1)} attendu)`);
+  if (a - la <= -1.2) parts.push(`attaque de ${m.away.name} surestimée (${la.toFixed(1)} attendu, ${a} marqué)`);
+  if (a - la >= 1.5) parts.push(`défense de ${m.home.name} plus faible que prévu (${a} encaissés pour ${la.toFixed(1)} attendu)`);
+  if (!parts.length) parts.push(`écart normal (${lh.toFixed(1)}-${la.toFixed(1)} attendu, ${h}-${a} réel) : part de hasard`);
+  return parts.join(' ; ');
+}
+
+// ---------- Apprentissage : correction par équipe ----------
+// Pour chaque équipe, on garde les 10 derniers matchs suivis : buts attendus / buts réels,
+// en attaque et en défense. Si l'équipe marque (ou encaisse) régulièrement plus ou moins que prévu,
+// on corrige ses prochains buts attendus (au plus ±15 %, à partir de 3 matchs).
+export function biasFactor(list) {
+  if (!list || list.length < 3) return 1;
+  const exp = list.reduce((s, x) => s + x[0], 0), act = list.reduce((s, x) => s + x[1], 0);
+  return Math.max(0.85, Math.min(1.15, 1 + 0.5 * (act - exp) / Math.max(exp, 1)));
+}
+
+// ---------- Top du jour : uniquement les pistes jugées fiables ----------
+// Conditions : statistiques présentes, au moins 4 matchs à domicile / à l'extérieur,
+// indice de confiance du match d'au moins 55/100, piste non évidente à 60 % ou plus,
+// et type de pari qui n'échoue pas trop souvent d'après les résultats passés.
+// (Les compositions officielles font monter l'indice : le top se complète avant les matchs.)
+export function topPicks(matches, analyses, bilanRates = {}) {
+  const out = [];
+  for (const m of matches) {
+    const a = analyses[m.id];
+    if (!a || !m.stats || a.verdict.code === 'skip' || a.verdict.score < 55 || m.status !== 'NS') continue;
+    if (Math.min(m.stats.home.p, m.stats.away.p) < 4) continue;
+    // (les paris buteurs ne sont pas vérifiables automatiquement : hors top)
+    const tip = a.tips.filter(t => !String(t.key).startsWith('SC') && t.p >= 0.60 && !t.easy)
+      .filter(t => { const r = bilanRates[t.key]; return !r || r.n < 10 || r.rate >= 0.45; })
+      .sort((x, y) => y.p - x.p)[0];
+    if (!tip) continue;
+    const official = m.lineups && m.lineups.home && m.lineups.home.status === 'officielle';
+    out.push({ m, tip, official });
+  }
+  return out.sort((x, y) => y.tip.p - x.tip.p);
 }
 
 export const hhmm = t => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris' });

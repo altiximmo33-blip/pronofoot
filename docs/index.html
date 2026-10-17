@@ -21,6 +21,7 @@
 
   <nav class="tabs" id="tabs">
     <button data-tab="matches" class="active">Matchs <span class="count" id="c-matches"></span></button>
+    <button data-tab="results">Résultats</button>
     <button data-tab="alerts">Alertes <span class="count hot" id="c-alerts"></span></button>
     <button data-tab="settings">Paramètres</button>
   </nav>
@@ -62,6 +63,10 @@
       </div>
       <div class="summary" id="summary"></div>
       <div id="match-list"></div>
+    </section>
+
+    <section id="view-results" class="view" hidden>
+      <div id="results"></div>
     </section>
 
     <section id="view-alerts" class="view" hidden>

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeMatch } from '../docs/js/model.js';
 import { compByAf } from '../docs/js/config.js';
-import { FD_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm } from '../docs/js/core.js';
+import { FD_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks } from '../docs/js/core.js';
 
 const AF_KEY = process.env.APIFOOTBALL_KEY;
 const FD_KEY = process.env.FOOTBALLDATA_KEY;
@@ -64,6 +64,79 @@ async function notify(title, message) {
   } catch (e) { console.warn('Notification impossible :', e.message); }
 }
 
+// ---------- Bilan de la veille et apprentissage ----------
+const BILAN_FILE = path.join(DATA, 'bilan.json');
+const FINISHED = ['FT', 'AET', 'PEN'];
+
+async function readBilan() {
+  try { return JSON.parse(await fs.readFile(BILAN_FILE, 'utf8')); } catch { return { days: [], teams: {} }; }
+}
+
+// Vérifie les pistes de la veille avec les vrais scores, explique les erreurs,
+// et met à jour la mémoire de chaque équipe (buts attendus / buts réels).
+async function reviewYesterday(today, bilan) {
+  const y = new Date(Date.parse(today + 'T12:00:00Z') - 86400000).toISOString().slice(0, 10);
+  if (bilan.days.some(d => d.date === y)) return;
+  let prev;
+  try { prev = JSON.parse(await fs.readFile(path.join(DATA, 'archive', `${y}.json`), 'utf8')); } catch { return; }
+  const fx = await af('fixtures', { date: y, timezone: 'Europe/Paris' });
+  const scores = {};
+  for (const f of fx.response || []) if (FINISHED.includes(f.fixture.status.short)) scores[f.fixture.id] = [f.goals.home, f.goals.away];
+
+  const analyses = {};
+  prev.matches.forEach(m => { analyses[m.id] = analyzeMatch(m); });
+  const topIds = new Set(topPicks(prev.matches.map(m => ({ ...m, status: 'NS' })), analyses).map(t => t.m.id));
+  const day = { date: y, matches: [] };
+  const remember = (id, name, kind, exp, act) => {
+    const t = bilan.teams[id] = bilan.teams[id] || { name, att: [], def: [] };
+    t[kind].push([+exp.toFixed(2), act]);
+    t[kind] = t[kind].slice(-10);
+  };
+  for (const m of prev.matches) {
+    const sc = scores[m.fixtureId];
+    if (!sc || !m.stats) continue;
+    const [h, a] = sc, an = analyses[m.id];
+    const picks = an.tips.filter(t => !String(t.key).startsWith('SC')).map(t => {
+      const ok = tipResult(t.key, h, a);
+      return { key: t.key, label: t.label, p: +t.p.toFixed(3), ok, why: ok === false ? failReason(m, an.lh, an.la, h, a) : '' };
+    }).filter(p => p.ok !== null);
+    day.matches.push({
+      id: m.id, comp: m.comp.name, home: m.home.name, away: m.away.name, score: `${h}-${a}`,
+      exp: `${an.lh.toFixed(1)}-${an.la.toFixed(1)}`, verdict: an.verdict.label, top: topIds.has(m.id),
+      official: !!(m.lineups && m.lineups.home && m.lineups.home.status === 'officielle'), picks,
+    });
+    remember(m.home.id, m.home.name, 'att', an.lh, h);
+    remember(m.away.id, m.away.name, 'att', an.la, a);
+    remember(m.home.id, m.home.name, 'def', an.la, a);
+    remember(m.away.id, m.away.name, 'def', an.lh, h);
+  }
+  bilan.days.unshift(day);
+  bilan.days = bilan.days.slice(0, 60);
+  bilan.updatedAt = new Date().toISOString();
+  const all = day.matches.flatMap(x => x.picks), ok = all.filter(p => p.ok).length;
+  console.log(`Bilan du ${y} : ${ok}/${all.length} pistes réussies`);
+  return { y, ok, total: all.length, top: day.matches.filter(x => x.top).flatMap(x => x.picks.slice(0, 1)) };
+}
+
+// Applique ce que le robot a appris sur chaque équipe aux matchs du jour
+function applyLearning(matches, bilan) {
+  for (const m of matches) {
+    if (!m.stats || !m.adj) continue;
+    const th = bilan.teams[m.home.id], ta = bilan.teams[m.away.id];
+    const attH = biasFactor(th && th.att), defA = biasFactor(ta && ta.def);
+    const attA = biasFactor(ta && ta.att), defH = biasFactor(th && th.def);
+    m.adj.home *= attH * defA;
+    m.adj.away *= attA * defH;
+    const pct = f => `${f > 1 ? '+' : ''}${Math.round((f - 1) * 100)} %`;
+    const notes = [];
+    if (Math.abs(attH - 1) >= 0.05) notes.push(`${m.home.name} marque ${attH > 1 ? 'plus' : 'moins'} que prévu sur ses derniers matchs suivis (${pct(attH)})`);
+    if (Math.abs(defA - 1) >= 0.05) notes.push(`${m.away.name} encaisse ${defA > 1 ? 'plus' : 'moins'} que prévu (${pct(defA)})`);
+    if (Math.abs(attA - 1) >= 0.05) notes.push(`${m.away.name} marque ${attA > 1 ? 'plus' : 'moins'} que prévu (${pct(attA)})`);
+    if (Math.abs(defH - 1) >= 0.05) notes.push(`${m.home.name} encaisse ${defH > 1 ? 'plus' : 'moins'} que prévu (${pct(defH)})`);
+    if (notes.length) m.tierText.push(`Correction apprise des erreurs passées : ${notes.join(' ; ')}.`);
+  }
+}
+
 // ---------- Collecte du matin ----------
 async function daily(today) {
   const fx = await af('fixtures', { date: today, timezone: 'Europe/Paris' });
@@ -104,14 +177,16 @@ function bestTip(a) {
 function dailySummary(matches) {
   const slots = groupSlots(matches);
   const withStats = matches.filter(m => m.stats);
-  const analysed = withStats.map(m => ({ m, a: analyzeMatch(m) })).filter(x => x.a.verdict.code !== 'skip');
-  const top = analysed.map(x => ({ x, t: x.a.tips.filter(t => t.key !== 'SC2').sort((p, q) => q.p - p.p)[0] }))
-    .filter(y => y.t).sort((p, q) => q.t.p - p.t.p).slice(0, 4);
+  const analyses = {};
+  withStats.forEach(m => { analyses[m.id] = analyzeMatch(m); });
+  const top = topPicks(withStats, analyses);
   const lines = [
     `${matches.length} matchs aujourd'hui, ${withStats.length} avec statistiques complètes.`,
     'Créneaux : ' + slots.map(s => `${hhmm(s.start)} (${s.matches.length})`).join(' · '),
+    top.length
+      ? `Top du jour (${top.length}) : ` + top.slice(0, 6).map(x => `${hhmm(x.m.kickoff)} ${x.m.home.name}-${x.m.away.name} : ${x.tip.label} ${pct(x.tip.p)}`).join(' | ')
+      : 'Top du jour : aucune piste assez fiable pour l\'instant (à revoir avec les compositions).',
   ];
-  if (top.length) lines.push('Pistes : ' + top.map(y => `${y.x.m.home.name}-${y.x.m.away.name} : ${y.t.label} ${pct(y.t.p)}`).join(' | '));
   return lines.join('\n');
 }
 
@@ -176,9 +251,17 @@ async function main() {
   let changed = false;
   if (!state || state.date !== today || FORCE) {
     if (parisHour() < 7 && !FORCE) { console.log('Trop tôt pour la collecte du jour.'); return; }
+    // Bilan de la veille d'abord (il sert à corriger les analyses du jour)
+    const bilan = await readBilan();
+    let review = null;
+    try { review = await reviewYesterday(today, bilan); } catch (e) { console.warn('Bilan impossible :', e.message); }
+    await fs.writeFile(BILAN_FILE, JSON.stringify(bilan));
+
     const matches = await daily(today);
+    applyLearning(matches, bilan);
     state = { date: today, generatedAt: new Date().toISOString(), afUsed: 0, matches, events: [] };
-    const summary = dailySummary(matches);
+    let summary = dailySummary(matches);
+    if (review && review.total) summary = `Bilan d'hier : ${review.ok}/${review.total} pistes réussies.\n` + summary;
     state.events.unshift({ t: Date.now(), level: 'info', title: 'Analyse du jour prête', body: summary.replace(/\n/g, ' | ') });
     await notify('PronoFoot : analyse du jour prête', summary);
     changed = true;
