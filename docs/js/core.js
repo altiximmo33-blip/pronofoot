@@ -172,7 +172,7 @@ export function applyInjuries(m, injuriesJson) {
 export function applyLineups(m, lineupsJson) {
   const r = lineupsJson.response || [];
   const conv = l => ({
-    status: 'officielle', formation: l.formation, coach: l.coach && l.coach.name,
+    status: 'officielle', formation: l.formation, coach: l.coach && l.coach.name, source: 'API-Football', at: Date.now(),
     startXI: (l.startXI || []).map(p => ({ id: null, name: p.player.name, pos: p.player.pos })),
     subs: (l.substitutes || []).map(p => ({ id: null, name: p.player.name, pos: p.player.pos })),
   });
@@ -250,7 +250,7 @@ export function applyEspnLineups(m, summaryJson) {
     if (xi.length < 11) return null;
     const name = p => (p.athlete && (p.athlete.displayName || p.athlete.fullName)) || '';
     return {
-      status: 'officielle', formation: r.formation || '', source: 'ESPN',
+      status: 'officielle', formation: r.formation || '', source: 'ESPN', at: Date.now(),
       startXI: xi.map(p => ({ id: null, name: name(p), pos: p.position && p.position.abbreviation })),
       subs: players.filter(p => !p.starter).map(p => ({ id: null, name: name(p), pos: p.position && p.position.abbreviation })),
     };

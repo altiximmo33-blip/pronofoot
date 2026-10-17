@@ -50,7 +50,7 @@ function render() {
   }
   $('#error').hidden = !state.error;
   $('#error').textContent = state.error ? 'Erreur de chargement : ' + state.error : '';
-  const next = state.kind === 'auto' ? 'compos cherchées toutes les 5 min, de 45 à 20 min avant chaque match' : nextCheck();
+  const next = state.kind === 'auto' ? 'compos cherchées toutes les 5 min, d\'1 h avant jusqu\'au coup d\'envoi' : nextCheck();
   $('#status').innerHTML = [
     state.kind === 'auto' ? '<span class="pill live">● Robot automatique</span>' : live ? '<span class="pill live">● Données réelles</span>' : state.kind === 'today' ? '<span class="pill live">● Matchs réels du jour</span>' : '<span class="pill demo">● Mode démo</span>',
     state.loading ? '<span>Chargement…</span>' : state.lastUpdate ? `<span>Mis à jour à ${new Date(state.lastUpdate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>` : '',
@@ -502,60 +502,126 @@ function trendHtml(m) {
   return `Tendance : 1 ${arrow(f.home, l.home)} · 2 ${arrow(f.away, l.away)}`;
 }
 
+// --- Analyse détaillée, écrite comme un commentaire ----------------------------------
+const TIER_ONE = { gros: 'gros', moyen: 'équipe moyenne', faible: 'équipe faible' };
+const TIER_MANY = { gros: 'gros', moyen: 'équipes moyennes', faible: 'équipes faibles' };
+const plural = (n, one, many) => `${n} ${n > 1 ? many : one}`;
+
+// Une phrase claire sur la forme et le niveau des adversaires récents
+function tierSentences(m, side) {
+  const rec = (m.recent && m.recent[side]) || [];
+  if (!rec.length) return [];
+  const name = m[side].name;
+  const by = { gros: { v: 0, n: 0, d: 0, t: 0 }, moyen: { v: 0, n: 0, d: 0, t: 0 }, faible: { v: 0, n: 0, d: 0, t: 0 } };
+  rec.forEach(g => { const b = by[g.tier] || by.moyen; b.t++; b[g.gf > g.ga ? 'v' : g.gf === g.ga ? 'n' : 'd']++; });
+  const parts = ['gros', 'moyen', 'faible'].filter(k => by[k].t).map(k => {
+    const b = by[k];
+    const res = [b.v && plural(b.v, 'victoire', 'victoires'), b.n && plural(b.n, 'nul', 'nuls'), b.d && plural(b.d, 'défaite', 'défaites')].filter(Boolean).join(', ');
+    return `${b.t} ${b.t > 1 ? TIER_MANY[k] : TIER_ONE[k]} (${res})`;
+  });
+  const out = [`Sur ses ${rec.length} derniers matchs, ${name} a affronté ${parts.join(', ')}.`];
+  const losses = rec.filter(g => g.gf < g.ga), wins = rec.filter(g => g.gf > g.ga);
+  if (losses.length >= 2 && losses.every(g => g.tier === 'gros')) out.push(`Ses défaites sont toutes venues contre des gros : sa baisse de résultats est à relativiser.`);
+  else if (wins.length >= 3 && wins.every(g => g.tier === 'faible')) out.push(`Ses victoires sont toutes venues contre des équipes faibles : sa bonne forme est à relativiser.`);
+  else if (by.gros.t >= 3) out.push(`Calendrier récent difficile, avec ${by.gros.t} gros affrontés.`);
+  // Face au niveau de l'adversaire du jour (8 derniers matchs)
+  const oppTier = m.tiers && m.tiers[side === 'home' ? 'away' : 'home'];
+  const s = oppTier && m.tierStats && m.tierStats[side] && m.tierStats[side][oppTier];
+  if (s && s.p >= 2) {
+    const ppm = s.pts / s.p;
+    const verdict = ppm >= 2 ? 'à l\'aise' : ppm <= 0.8 ? 'en difficulté' : 'dans la moyenne';
+    out.push(`Face aux ${TIER_MANY[oppTier]} (le niveau de ${m[side === 'home' ? 'away' : 'home'].name} aujourd'hui), ${name} est ${verdict} : ${ppm.toFixed(1)} point par match, ${(s.gf / s.p).toFixed(1)} but marqué et ${(s.ga / s.p).toFixed(1)} encaissé en moyenne sur ${s.p} matchs.`);
+  }
+  return out;
+}
+
+// Pourquoi une piste est proposée, en une phrase
+function tipWhy(t, m, a) {
+  const H = m.home.name, A = m.away.name, tot = (a.lh + a.la).toFixed(1);
+  const scoreH = Math.round((1 - Math.exp(-a.lh)) * 100), scoreA = Math.round((1 - Math.exp(-a.la)) * 100);
+  if (['O25', 'O35', 'O15'].includes(t.key)) return `${tot} buts attendus au total.`;
+  if (['U25', 'U15'].includes(t.key)) return `Seulement ${tot} buts attendus : deux équipes qui marquent peu.`;
+  if (t.key === 'BTTS') return `${H} marque dans ${scoreH} % des cas, ${A} dans ${scoreA} %.`;
+  if (t.key === 'NBTTS') return `${scoreH < scoreA ? H : A} a du mal à marquer (${Math.min(scoreH, scoreA)} % de chances).`;
+  if (t.key === 'H2G') return `${H} devrait marquer environ ${a.lh.toFixed(1)} buts.`;
+  if (t.key === 'A2G') return `${A} devrait marquer environ ${a.la.toFixed(1)} buts.`;
+  if (t.key === 'SC' || t.key === 'SC2') return 'Buteur principal de son équipe, présent au coup d\'envoi.';
+  if (['1N', 'N2'].includes(t.key)) return `L'outsider a de quoi accrocher le nul : écart faible entre les deux équipes.`;
+  return `${H} ${pct(a.p.home)} · nul ${pct(a.p.draw)} · ${A} ${pct(a.p.away)}.`;
+}
+
 function detailHtml(m, a) {
-  const stLabel = { titulaire: 'Titulaire', probable: 'Probable', incertain: 'Incertain', remplacant: 'Remplaçant', absent: 'Absent' };
-  const scorers = [...a.scorers.home, ...a.scorers.away].sort((x, y) => y.p1 - x.p1);
-  const absences = side => {
-    const p = a.presence[side];
-    const rows = [...p.missing.map(x => ({ name: x.name, why: x.reason ? reasonFr(x.reason) : stLabel[x.status], st: x.status, imp: `${x.goals} buts (${pct(x.share)})` })),
-      ...p.otherOut.map(x => ({ name: x.name, why: x.reason ? reasonFr(x.reason) : 'Absent', st: 'absent', imp: '' }))];
-    return rows.length ? rows.map(r => `<tr><td>${esc(r.name)}</td><td><span class="st ${r.st}">${esc(stLabel[r.st])}</span></td><td class="small muted">${esc(r.why)}</td><td class="num small">${esc(r.imp)}</td></tr>`).join('')
-      : '<tr><td colspan="4" class="muted">Aucune absence signalée</td></tr>';
-  };
+  const H = m.home.name, A = m.away.name, v = a.verdict;
+  const official = m.lineups && m.lineups.home && m.lineups.home.status === 'officielle';
+  const lu = official ? m.lineups.home : null;
+  const time = t => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+
+  // 1) En bref
+  const brief = [];
+  const gap = Math.abs(a.p.home - a.p.away);
+  if (gap < 0.12) brief.push(`Match équilibré : ${H} ${pct(a.p.home)}, nul ${pct(a.p.draw)}, ${A} ${pct(a.p.away)}.`);
+  else { const fav = a.p.home > a.p.away ? H : A; brief.push(`${fav} part favori (${pct(Math.max(a.p.home, a.p.away))} de chances de gagner, nul ${pct(a.p.draw)}).`); }
+  const tot = a.lh + a.la, o25 = a.markets.find(x => x.key === 'O25').p;
+  brief.push(`On attend environ ${tot.toFixed(1)} buts : ${o25 >= 0.6 ? 'profil de match à buts' : o25 <= 0.4 ? 'profil de match fermé' : 'nombre de buts incertain'}.`);
+  if (m.stats) {
+    const hs = m.stats.home, as = m.stats.away;
+    brief.push(`${H} marque ${(hs.gf / hs.p).toFixed(1)} et encaisse ${(hs.ga / hs.p).toFixed(1)} but par match à domicile ; ${A} marque ${(as.gf / as.p).toFixed(1)} et encaisse ${(as.ga / as.p).toFixed(1)} à l'extérieur.`);
+  }
+  const lineupLine = official
+    ? `<p class="ok-line">✓ Analyse recalculée avec les compositions officielles${lu.source ? ` (${esc(lu.source)}${lu.at ? `, ${time(lu.at)}` : ''})` : ''}.</p>`
+    : `<p class="muted small">Compositions officielles pas encore publiées : l'analyse sera recalculée automatiquement dès leur sortie (à partir d'1 h avant).</p>`;
+  const verdictText = v.code === 'play' ? 'Intéressant : les pistes ci-dessous sont solides.'
+    : v.code === 'watch' ? (official ? 'À surveiller : des pistes existent, mais l\'écart n\'est pas assez net pour en faire un pari sûr.' : 'À surveiller : à confirmer avec les compositions officielles.')
+    : v.obvious ? 'Trop évident : rien d\'intéressant à jouer.' : v.label === 'Pas de statistiques' ? 'Pas de statistiques pour ce match.' : 'Trop incertain : mieux vaut passer.';
+
+  // 2) Forme et niveau des adversaires
+  const formH = tierSentences(m, 'home'), formA = tierSentences(m, 'away');
+
+  // 3) Absences et compositions
+  const infos = keyInfo(m, a);
+  const absList = side => ((m.injuries && m.injuries[side]) || []).map(i => `${i.name} (${reasonFr(i.reason) || 'absent'})`);
   const lineup = side => {
-    const lu = m.lineups && m.lineups[side];
-    const team = m[side];
-    if (!lu || !lu.startXI) return `<div><b>${esc(team.name)}</b><p class="muted small">Pas encore disponible.</p></div>`;
-    const pool = (m.scorers && m.scorers[side]) || [];
-    const inj = (m.injuries && m.injuries[side]) || [];
-    const isStar = p => pool.slice(0, 2).some(s => s.name === p.name || (s.id && s.id === p.id));
-    const isOut = p => lu.status !== 'officielle' && inj.some(i => i.name === p.name || (i.id && i.id === p.id));
-    return `<div><b>${esc(team.name)}</b> <span class="muted small">${esc(lu.formation || '')} · ${lu.status === 'officielle' ? 'officielle' : 'probable'}</span>
-      <ol>${lu.startXI.map(p => `<li class="${isStar(p) ? 'star' : ''} ${isOut(p) ? 'out' : ''}"><span class="pos">${esc(p.pos || '')}</span>${esc(p.name)}${isStar(p) ? ' ⭐' : ''}</li>`).join('')}</ol>
-      ${lu.subs && lu.subs.length ? `<p class="small muted">Banc : ${lu.subs.map(p => esc(p.name)).join(', ')}</p>` : ''}</div>`;
+    const l = m.lineups && m.lineups[side];
+    if (!l || !l.startXI) return `<div><b>${esc(m[side].name)}</b><p class="muted small">Pas encore disponible.</p></div>`;
+    return `<div><b>${esc(m[side].name)}</b> <span class="muted small">${esc(l.formation || '')} · ${l.status === 'officielle' ? 'officielle' : 'probable'}</span>
+      <p class="small">${l.startXI.map(p => esc(p.name)).join(', ')}</p>
+      ${l.subs && l.subs.length ? `<p class="small muted">Banc : ${l.subs.map(p => esc(p.name)).join(', ')}</p>` : ''}</div>`;
   };
-  const hist = (m.odds && m.odds.history) || [];
+
+  // 4) Ce qu'on peut jouer
+  const tips = [...a.tips].sort((x, y) => y.p - x.p);
+  const scorers = [...a.scorers.home, ...a.scorers.away].sort((x, y) => y.p1 - x.p1).slice(0, 4);
+
   return `
   <div class="detail">
-    <div class="box wide analysis"><h4>Analyse</h4>${a.text.map(t => `<p>${esc(t)}</p>`).join('')}</div>
-    <div class="box"><h4>Paris et probabilités</h4>
-      <table><tr><th>Pari</th><th class="num">Proba</th><th class="num">Cote</th><th class="num">Valeur</th></tr>
-      ${a.markets.map(x => `<tr class="${x.edge > 0.06 ? 'value' : ''}"><td>${esc(x.label)}</td><td class="num">${pct(x.p)}</td><td class="num">${odd(x.odd)}</td><td class="num">${x.edge == null ? '' : `<span class="${x.edge > 0.06 ? 'edge' : 'muted'}">${x.edge > 0 ? '+' : ''}${Math.round(x.edge * 100)} %</span>`}</td></tr>`).join('')}
-      </table>
-      <p class="small muted">Cote juste = 1 / probabilité. « Valeur » positive : la cote proposée est plus haute que ce que notre estimation justifie.</p>
+    <div class="box wide analysis"><h4>En bref</h4>
+      ${brief.map(t => `<p>${esc(t)}</p>`).join('')}
+      ${lineupLine}
+      <p><b>Verdict : ${esc(verdictText)}</b></p>
     </div>
-    <div class="box"><h4>Buteurs à surveiller</h4>
-      ${scorers.length ? `<table><tr><th>Joueur</th><th>Statut</th><th class="num">Buts</th><th class="num">Marque</th><th class="num">Doublé</th></tr>
-      ${scorers.map(p => `<tr><td>${esc(p.name)}<div class="small muted">${esc(p.team)}</div></td><td><span class="st ${p.status}">${stLabel[p.status]}</span></td><td class="num">${p.goals}</td><td class="num"><b>${pct(p.p1)}</b></td><td class="num">${pct(p.p2)}</td></tr>`).join('')}</table>` : '<p class="muted">Données buteurs indisponibles pour cette compétition.</p>'}
-      <h4 style="margin-top:14px">Scores les plus probables</h4>
-      <div class="scores">${a.scores.map(s => `<span>${s.h}-${s.a}<small>${pct(s.p)}</small></span>`).join('')}</div>
+
+    <div class="box wide analysis"><h4>Forme et niveau des adversaires</h4>
+      ${formH.length || formA.length ? `${formH.map(t => `<p>${esc(t)}</p>`).join('')}${formA.length ? `<hr class="soft">${formA.map(t => `<p>${esc(t)}</p>`).join('')}` : ''}`
+        : '<p class="muted">Pas de données sur les derniers matchs pour cette compétition.</p>'}
     </div>
-    <div class="box"><h4>Absences – ${esc(m.home.name)}</h4><table>${absences('home')}</table>
-      <h4 style="margin-top:14px">Absences – ${esc(m.away.name)}</h4><table>${absences('away')}</table></div>
-    <div class="box"><h4>Compositions</h4><div class="lineups">${lineup('home')}${lineup('away')}</div></div>
-    <div class="box"><h4>Forces (indice 1 = moyenne du championnat)</h4>
-      ${a.idx ? `<table><tr><th></th><th class="num">Attaque</th><th class="num">Défense*</th></tr>
-        <tr><td>${esc(m.home.name)} à domicile</td><td class="num">${a.idx.attH.toFixed(2)}</td><td class="num">${a.idx.defH.toFixed(2)}</td></tr>
-        <tr><td>${esc(m.away.name)} à l'extérieur</td><td class="num">${a.idx.attA.toFixed(2)}</td><td class="num">${a.idx.defA.toFixed(2)}</td></tr></table>
-        <p class="small muted">* Défense : plus le chiffre est bas, plus l'équipe est solide.</p>`
-        : `<p class="muted">${a.method === 'prediction' ? 'Match de coupe : estimation à partir de la prédiction de la source.' : 'Statistiques indisponibles.'}</p>`}
-      ${m.apiPrediction && m.apiPrediction.advice ? `<p class="small"><b>Conseil de la source :</b> ${esc(m.apiPrediction.advice)}</p>` : ''}
-      ${m.h2h && m.h2h.length ? `<h4 style="margin-top:12px">Confrontations directes</h4><table>${m.h2h.map(g => `<tr><td class="small muted">${new Date(g.date).toLocaleDateString('fr-FR')}</td><td>${esc(g.home)} – ${esc(g.away)}</td><td class="num"><b>${esc(g.score)}</b></td></tr>`).join('')}</table>` : ''}
+
+    <div class="box wide analysis"><h4>Absences et compositions</h4>
+      ${infos.length ? `<ul class="c-infos flat">${infos.map(i => `<li class="${i.k}">${esc(i.t)}</li>`).join('')}</ul>` : '<p class="muted">Aucune absence importante signalée.</p>'}
+      ${absList('home').length ? `<p class="small"><b>Absents ${esc(H)} :</b> ${esc(absList('home').join(', '))}</p>` : ''}
+      ${absList('away').length ? `<p class="small"><b>Absents ${esc(A)} :</b> ${esc(absList('away').join(', '))}</p>` : ''}
+      <details><summary>Voir les compositions</summary><div class="lineups">${lineup('home')}${lineup('away')}</div></details>
     </div>
-    ${tierHtml(m)}
-    <div class="box"><h4>Évolution des cotes 1 N 2</h4>
-      ${hist.length ? `<table><tr><th>Heure</th><th class="num">1</th><th class="num">N</th><th class="num">2</th></tr>${hist.map(h => `<tr><td class="small muted">${new Date(h.t).toLocaleString('fr-FR', { weekday: 'short', hour: '2-digit', minute: '2-digit' })}</td><td class="num">${odd(h.home)}</td><td class="num">${odd(h.draw)}</td><td class="num">${odd(h.away)}</td></tr>`).join('')}</table>` : '<p class="muted">Pas encore d\'historique.</p>'}
+
+    <div class="box wide analysis"><h4>Ce qu'on peut jouer</h4>
+      ${tips.length ? `<ul class="play-list">${tips.map(t => `<li><div><b>${esc(t.label)}</b><span class="muted small">${esc(tipWhy(t, m, a))}</span></div><b class="p">${pct(t.p)}</b></li>`).join('')}</ul>` : '<p class="muted">Aucune piste non évidente sur ce match.</p>'}
+      ${v.easy && v.easy.length ? `<p class="small muted">Écartés car trop évidents : ${esc(v.easy.map(x => `${x.label} (${pct(x.p)})`).join(', '))}.</p>` : ''}
+      ${scorers.length ? `<p class="small"><b>Buteurs :</b> ${scorers.map(p => `${esc(p.name)} ${pct(p.p1)}${p.p2 >= 0.1 ? ` (doublé ${pct(p.p2)})` : ''}`).join(' · ')}</p>` : ''}
+      <p class="small muted">Scores les plus probables : ${a.scores.slice(0, 4).map(s => `${s.h}-${s.a} (${pct(s.p)})`).join(', ')}.</p>
+      <details><summary>Toutes les probabilités</summary>
+        <table>${a.markets.map(x => `<tr><td>${esc(x.label)}</td><td class="num">${pct(x.p)}</td></tr>`).join('')}</table>
+      </details>
     </div>
+    ${m.h2h && m.h2h.length ? `<div class="box wide"><h4>Confrontations directes</h4><table>${m.h2h.map(g => `<tr><td class="small muted">${new Date(g.date).toLocaleDateString('fr-FR')}</td><td>${esc(g.home)} – ${esc(g.away)}</td><td class="num"><b>${esc(g.score)}</b></td></tr>`).join('')}</table></div>` : ''}
   </div>`;
 }
 
