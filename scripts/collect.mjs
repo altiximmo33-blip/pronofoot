@@ -27,8 +27,13 @@ const pct = p => `${Math.round(p * 100)} %`;
 
 // ---------- Appels aux deux sources ----------
 let afUsed = 0;
+let lastAf = 0;
 async function af(p, params) {
   if (afUsed >= AF_BUDGET) throw new Error('Quota API-Football du jour presque atteint');
+  // Offre gratuite : 10 requêtes par minute
+  const wait = lastAf + 6500 - Date.now();
+  if (wait > 0) await sleep(wait);
+  lastAf = Date.now();
   afUsed++;
   const r = await fetch(`https://v3.football.api-sports.io/${p}?${new URLSearchParams(params)}`, { headers: { 'x-apisports-key': AF_KEY } });
   const j = await r.json();
@@ -79,11 +84,14 @@ async function daily(today) {
   }
 
   const matches = list.map(f => buildMatch(f, comps[f.league.id]));
-  // Absents : en priorité les matchs avec statistiques (quota limité)
-  const withStats = matches.filter(m => m.stats).sort((a, b) => a.kickoff - b.kickoff);
+  // Absents : matchs avec statistiques, grandes compétitions d'abord (quota limité :
+  // on garde environ 65 requêtes pour les compositions de la journée)
+  const PRIORITY = [2, 61, 39, 140, 135, 78, 40, 88, 94];
+  const withStats = matches.filter(m => m.stats)
+    .sort((a, b) => PRIORITY.indexOf(a.comp.af) - PRIORITY.indexOf(b.comp.af) || a.kickoff - b.kickoff);
   for (const m of withStats) {
-    if (afUsed >= 55) break; // on garde du quota pour les compositions
-    try { applyInjuries(m, await af('injuries', { fixture: m.fixtureId })); } catch (e) { console.warn(e.message); break; }
+    if (afUsed >= 30) break;
+    try { applyInjuries(m, await af('injuries', { fixture: m.fixtureId })); } catch (e) { console.warn(e.message); }
   }
   return matches;
 }
@@ -108,15 +116,16 @@ function dailySummary(matches) {
 }
 
 // ---------- Compositions officielles ----------
-// Les compositions sortent au mieux 1 h avant : on cherche à partir de 45 min avant,
+// Les compositions sortent au mieux 1 h avant : on cherche de 45 à 20 min avant le match,
 // à chaque passage (toutes les 5 min), tous les matchs concernés en une seule requête.
-const LINEUPS_FROM_MIN = 45;
+// (5 essais par créneau horaire : tient dans le quota gratuit même un samedi chargé)
+const LINEUPS_FROM_MIN = 45, LINEUPS_UNTIL_MIN = 20;
 
 async function lineupsPass(state) {
   const now = Date.now();
   const isOfficial = m => m.lineups && m.lineups.home && m.lineups.home.status === 'officielle';
   const due = state.matches
-    .filter(m => !isOfficial(m) && m.kickoff - now <= LINEUPS_FROM_MIN * 60000 && m.kickoff - now > -5 * 60000);
+    .filter(m => !isOfficial(m) && m.kickoff - now <= LINEUPS_FROM_MIN * 60000 && m.kickoff - now > LINEUPS_UNTIL_MIN * 60000);
   if (!due.length) return false;
   console.log(`Compositions recherchées pour ${due.length} match(s)`);
   const found = [];
