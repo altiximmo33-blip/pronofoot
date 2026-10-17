@@ -1,7 +1,7 @@
 name: Collecte PronoFoot
 on:
   schedule:
-    # Toutes les 15 minutes de 7h à 0h45 (heure de Paris en été), en heure UTC
+    # Secours uniquement : le robot est réveillé toutes les 5 minutes par cron-job.org
     - cron: '7,17,27,37,47,57 5-22 * * *'
   workflow_dispatch:
     inputs:
@@ -38,5 +38,9 @@ jobs:
             echo "Rien à enregistrer"
           else
             git commit -m "Collecte $(TZ=Europe/Paris date '+%F %H:%M')"
-            git push
+            # Si un autre passage a enregistré entre-temps : on récupère sa version et on réessaie
+            for i in 1 2 3; do
+              if git push; then break; fi
+              git pull --rebase -X theirs || { git rebase --abort; echo "Conflit : le prochain passage réessaiera"; break; }
+            done
           fi
