@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeMatch } from '../docs/js/model.js';
 import { compByAf } from '../docs/js/config.js';
-import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnFindEvent, applyEspnLineups } from '../docs/js/core.js';
+import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs } from '../docs/js/core.js';
 
 const AF_KEY = process.env.APIFOOTBALL_KEY;
 const FD_KEY = process.env.FOOTBALLDATA_KEY;
@@ -222,6 +222,12 @@ function dailySummary(matches) {
       ? `Top du jour (${top.length}) : ` + top.slice(0, 6).map(x => `${hhmm(x.m.kickoff)} ${x.m.home.name}-${x.m.away.name} : ${x.tip.label} ${pct(x.tip.p)}`).join(' | ')
       : 'Top du jour : aucune piste assez fiable pour l\'instant (à revoir avec les compositions).',
   ];
+  // Combiné du jour (5 sélections solides, sans attendre les compositions)
+  const legs = comboLegs(withStats, analyses).slice(0, 5);
+  if (legs.length >= 3) {
+    const p = legs.reduce((acc, x) => acc * x.tip.p, 1);
+    lines.push(`Combiné ${legs.length} sélections (${pct(p)}, cote ≈ ${Math.round(1 / p)}) : ` + legs.map(x => `${x.m.home.name}-${x.m.away.name} : ${x.tip.label}`).join(' | '));
+  }
   return lines.join('\n');
 }
 
@@ -300,6 +306,56 @@ async function lineupsPass(state) {
   return true;
 }
 
+// ---------- Scores en direct : alertes de buts et de fin de match ----------
+// Uniquement pour les matchs suivis : top du jour et matchs jugés « Intéressant ».
+async function livePass(state) {
+  const now = Date.now();
+  const live = state.matches.filter(m => m.stats && ESPN_CODES[m.comp && m.comp.af] && m.kickoff <= now + 2 * 60000 && now - m.kickoff < 150 * 60000);
+  if (!live.length) return false;
+  state.live = state.live || {};
+  const analyses = {};
+  state.matches.forEach(m => { analyses[m.id] = analyzeMatch(m); });
+  const topIds = new Set(topPicks(state.matches.map(m => ({ ...m, status: 'NS' })), analyses).map(x => x.m.id));
+  const followed = live.filter(m => topIds.has(m.id) || analyses[m.id].verdict.code === 'play');
+  if (!followed.length) return false;
+
+  let changed = false;
+  const boards = {};
+  for (const m of followed) {
+    const code = ESPN_CODES[m.comp.af];
+    const day = new Date(m.kickoff).toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' }).replace(/-/g, '');
+    let s;
+    try {
+      boards[code + day] = boards[code + day] || await espn(`${ESPN_SITE}${code}/scoreboard?dates=${day}`);
+      s = espnLiveScore(boards[code + day], m.home.name, m.away.name);
+    } catch (e) { console.warn(e.message); continue; }
+    if (!s || s.state === 'pre') continue;
+    const prev = state.live[m.id] || { h: 0, a: 0, state: 'pre' };
+    const name = `${m.home.name} ${s.h}-${s.a} ${m.away.name}`;
+    const tip = analyses[m.id].tips.filter(t => !String(t.key).startsWith('SC')).sort((x, y) => y.p - x.p)[0];
+
+    // Nouveau but (on ignore une baisse de score : but annulé par la vidéo)
+    if (s.h + s.a > prev.h + prev.a) {
+      const scorer = s.h > prev.h ? m.home.name : m.away.name;
+      const ok = tip ? tipResult(tip.key, s.h, s.a) : null;
+      await notify(`⚽ But de ${scorer} (${s.clock})`, `${name}${tip ? `\nPiste « ${tip.label} » : ${ok ? 'en bonne voie' : 'pas encore'}` : ''}`);
+      state.events.unshift({ t: Date.now(), matchId: m.id, level: 'info', title: `⚽ But : ${name}`, body: `${s.clock}` });
+    }
+    // Coup de sifflet final
+    if (s.state === 'post' && prev.state !== 'post') {
+      const ok = tip ? tipResult(tip.key, s.h, s.a) : null;
+      const verdict = tip ? `Piste « ${tip.label} » : ${ok ? '✓ gagnée' : '✗ perdue'}` : '';
+      await notify(`Terminé : ${name}`, verdict);
+      state.events.unshift({ t: Date.now(), matchId: m.id, level: ok ? 'go' : 'warn', title: `Terminé : ${name}`, body: verdict });
+    }
+    if (s.h !== prev.h || s.a !== prev.a || s.state !== prev.state) {
+      state.live[m.id] = { h: s.h, a: s.a, state: s.state, clock: s.clock };
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 // ---------- Programme principal ----------
 async function main() {
   if (!AF_KEY || !FD_KEY) throw new Error('Clés manquantes : APIFOOTBALL_KEY et FOOTBALLDATA_KEY doivent être dans les secrets GitHub.');
@@ -330,6 +386,7 @@ async function main() {
   }
   const usedBefore = afUsed;
   if (await lineupsPass(state)) changed = true;
+  try { if (await livePass(state)) changed = true; } catch (e) { console.warn('Scores en direct :', e.message); }
 
   // Le compteur de requêtes doit être enregistré même sans nouveauté (pour respecter le quota)
   if (!changed && afUsed === usedBefore) { console.log('Rien de nouveau.'); return; }

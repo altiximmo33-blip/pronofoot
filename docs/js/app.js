@@ -2,7 +2,7 @@ import { COMPETITIONS } from './config.js';
 import * as E from './engine.js';
 const { state, onChange, start, loadAll, toggleHidden, clearAlerts, saveSettings, testKeys } = E;
 import { load, save } from './store.js';
-import { topPicks } from './core.js';
+import { topPicks, tipResult, comboLegs } from './core.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -11,6 +11,15 @@ const odd = o => o ? o.toFixed(2) : '–';
 const expanded = new Set();   // analyse complète ouverte
 const opened = new Set();     // fiche complète ouverte (sinon fiche courte)
 const openSkips = new Set();  // créneaux dont les matchs sans intérêt sont dépliés
+let showPast = false;         // matchs commencés depuis plus de 30 min (repliés par défaut)
+
+// Favoris : gardés sur ce téléphone pour la journée (indépendants des actualisations)
+const parisToday = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' });
+const favs = new Set((() => { const f = load('favs', null); return f && f.date === parisToday() ? f.ids : []; })());
+function toggleFav(id) {
+  favs.has(id) ? favs.delete(id) : favs.add(id);
+  save('favs', { date: parisToday(), ids: [...favs] });
+}
 let tab = 'matches';
 let seenAlerts = load('seenAlerts', 0);
 
@@ -105,7 +114,8 @@ function fillCompFilter() {
 function renderMatches() {
   const q = $('#f-search').value.trim().toLowerCase();
   const comp = $('#f-comp').value, verdict = $('#f-verdict').value, sort = $('#f-sort').value, showHidden = $('#f-hidden').checked;
-  const all = state.matches.filter(m => m.status !== 'FT');
+  // Les matchs terminés restent affichés (avec le score final et le résultat des pistes)
+  const all = state.matches;
   const hiddenCount = all.filter(m => state.hidden.has(m.id)).length;
   $('#c-hidden').textContent = hiddenCount ? `(${hiddenCount})` : '';
 
@@ -137,9 +147,16 @@ function renderMatches() {
     $('#match-list').innerHTML = `<div class="empty-state">${state.loading ? 'Chargement des matchs…' : 'Aucun match ne correspond.'}</div>`;
     return;
   }
-  const top = (!q && !comp && !verdict) ? topHtml(all.filter(m => !state.hidden.has(m.id))) : '';
-  if (sort !== 'slot') { $('#match-list').innerHTML = top + list.map(cardHtml).join(''); return; }
-  $('#match-list').innerHTML = top + groupSlots(list).map(slotHtml).join('');
+  const visibleAll = all.filter(m => !state.hidden.has(m.id));
+  const top = (!q && !comp && !verdict) ? favHtml() + topHtml(visibleAll) + combosHtml(visibleAll) : '';
+  // Les matchs commencés depuis au moins 30 minutes passent dans une section repliée, en bas
+  const cutoff = Date.now() - 30 * 60000;
+  const upcoming = list.filter(m => m.kickoff > cutoff), past = list.filter(m => m.kickoff <= cutoff);
+  const pastHtml = past.length ? `<button class="link muted skip-toggle past-toggle" data-act="past">${showPast ? '▲ Replier' : '▼ Voir'} ${past.length > 1 ? `les ${past.length} matchs commencés ou terminés` : 'le match commencé ou terminé'}</button>
+    ${showPast ? `<div class="match-list">${past.sort((a, b) => b.kickoff - a.kickoff).map(cardHtml).join('')}</div>` : ''}` : '';
+  const body = !upcoming.length ? '<div class="empty-state">Plus aucun match à venir aujourd\'hui.</div>'
+    : sort !== 'slot' ? upcoming.map(cardHtml).join('') : groupSlots(upcoming).map(slotHtml).join('');
+  $('#match-list').innerHTML = top + body + pastHtml;
 }
 
 // Toucher une ligne du top ouvre la fiche du match et y descend
@@ -199,6 +216,75 @@ function slotHtml(slot) {
   </section>`;
 }
 
+// Combinés du jour : 5 / 8 / 10 / 15 sélections solides, construites sans attendre les compositions
+let comboSize = 5;
+function combosHtml(list) {
+  const legs = comboLegs(list, state.analyses);
+  if (legs.length < 3) return '';
+  const sizes = [5, 8, 10, 15].filter(n => n <= legs.length);
+  if (!sizes.includes(comboSize)) comboSize = sizes[0] || legs.length;
+  const sel = legs.slice(0, comboSize).sort((x, y) => x.m.kickoff - y.m.kickoff);
+  const p = sel.reduce((acc, x) => acc * x.tip.p, 1);
+  const time = t => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  const fmtP = p >= 0.01 ? pct(p) : `${(p * 100).toFixed(2).replace('.', ',')} %`;
+  return `<section class="combos">
+    <div class="top-head"><h2>🎯 Combinés du jour</h2><span class="small muted">sélections solides sans attendre les compositions</span></div>
+    <div class="combo-tabs">${sizes.map(n => `<button class="${n === comboSize ? 'on' : ''}" data-act="combo" data-n="${n}">${n} sélections</button>`).join('')}</div>
+    <ol class="combo-list">${sel.map(x => `<li>
+      <div class="combo-leg"><span class="c-time">${time(x.m.kickoff)}</span>
+        <span class="c-teams"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span><small>${esc(x.tip.label)}</small></span>
+        <b class="p">${pct(x.tip.p)}</b></div>
+      ${x.reasons.length ? `<div class="small muted combo-why">${esc(x.reasons.join(' · '))}</div>` : ''}
+    </li>`).join('')}</ol>
+    <div class="combo-total"><span>Probabilité que tout passe : <b>${fmtP}</b></span><span>Cote équivalente : <b>≈ ${Math.round(1 / p).toLocaleString('fr-FR')}</b></span></div>
+    <p class="small muted">Chaque sélection est une piste non évidente (55 à 66 %). Les probabilités se multiplient : plus le combiné est long, plus le gain est gros et plus les chances sont faibles. Vérifiez les compositions avant les premiers matchs.</p>
+  </section>`;
+}
+
+// Mes favoris : les matchs choisis, en haut de page, avec la demande d'analyse approfondie pour Claude
+function favHtml() {
+  const list = state.matches.filter(m => favs.has(m.id)).sort((a, b) => a.kickoff - b.kickoff);
+  if (!list.length) return '';
+  return `<section class="favs">
+    <div class="top-head"><h2>⭐ Mes favoris (${list.length})</h2></div>
+    <div class="match-list">${list.map(cardHtml).join('')}</div>
+    <div class="fav-actions">
+      <button class="btn" data-act="copyfav">🔎 Analyse approfondie avec Claude</button>
+      <span class="small muted" id="fav-msg">Copie une demande prête à coller dans Claude, avec ces matchs et les chiffres du robot. Recollez ensuite son bloc PRONOFOOT avec « ＋ Ajouter ».</span>
+    </div>
+  </section>`;
+}
+
+// Demande d'analyse approfondie pour Claude : ce que le robot ne voit pas
+function favPrompt() {
+  const list = state.matches.filter(m => favs.has(m.id)).sort((a, b) => a.kickoff - b.kickoff);
+  const lines = list.map(m => {
+    const a = state.analyses[m.id];
+    const time = new Date(m.kickoff).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    const s = m.stats;
+    const stats = s ? `${m.home.name} à domicile : ${s.home.p} matchs, ${s.home.gf} buts marqués, ${s.home.ga} encaissés ; ${m.away.name} à l'extérieur : ${s.away.p} matchs, ${s.away.gf} marqués, ${s.away.ga} encaissés.` : 'Pas de statistiques côté robot.';
+    const tips = a.tips.filter(t => t.key !== 'SC2').sort((x, y) => y.p - x.p).slice(0, 3).map(t => `${t.label} (${Math.round(t.p * 100)} %)`).join(', ');
+    const lu = m.lineups && m.lineups.home && m.lineups.home.status === 'officielle' ? 'compositions officielles connues' : 'compositions pas encore officielles';
+    return `- ${time} · ${m.comp.name} · ${m.home.name} – ${m.away.name}\n  Chiffres du robot : ${stats}\n  Pistes du robot : ${tips || 'aucune'} (verdict : ${a.verdict.label}, ${lu}).`;
+  });
+  return `Analyse approfondie (mes favoris du jour). Pour chacun de ces matchs, va plus loin que les statistiques :
+${lines.join('\n')}
+
+Pour chaque match, cherche ce que les chiffres ne montrent pas : actualité des dernières 48 h (blessures de dernière minute, suspensions, retours), déclarations des entraîneurs, rotation probable (coupe d'Europe ou match important à venir), enjeu et motivation (classement, derby, maintien), confrontations directes récentes, conditions (météo, terrain, voyage).
+Puis dis clairement si tu CONFIRMES ou CONTREDIS les pistes du robot, avec la raison en une phrase, et propose au besoin une meilleure piste non évidente (entre 40 et 66 %).
+Réponse courte : 5 lignes maximum par match. Termine par le bloc PRONOFOOT de ces matchs (avec "note" = ton avis en une phrase).`;
+}
+
+async function copyFavPrompt(btn) {
+  const text = favPrompt();
+  const msg = $('#fav-msg');
+  try { await navigator.clipboard.writeText(text); msg.textContent = '✓ Demande copiée : collez-la dans votre projet Claude.'; }
+  catch {
+    // Copie refusée par le téléphone : on affiche le texte à sélectionner à la main
+    msg.innerHTML = `Copie automatique refusée : appuyez longuement dans le texte ci-dessous, « Tout sélectionner », puis « Copier ».<textarea class="fav-prompt" readonly rows="8">${esc(text)}</textarea>`;
+  }
+}
+
 // Top du jour : uniquement les pistes jugées fiables (le nombre varie, parfois aucune)
 function topHtml(list) {
   const top = topPicks(list, state.analyses, state.bilanRates || {});
@@ -225,6 +311,10 @@ $('#match-list').addEventListener('click', e => {
   const b = e.target.closest('[data-act]');
   if (!b) return;
   if (b.dataset.act === 'skips') { const k = b.dataset.slot; openSkips.has(k) ? openSkips.delete(k) : openSkips.add(k); renderMatches(); return; }
+  if (b.dataset.act === 'copyfav') { copyFavPrompt(b); return; }
+  if (b.dataset.act === 'combo') { comboSize = +b.dataset.n; renderMatches(); return; }
+  if (b.dataset.act === 'past') { showPast = !showPast; renderMatches(); return; }
+  if (b.dataset.act === 'fav') { toggleFav(b.closest('.card').dataset.id); renderMatches(); return; }
   const card = b.closest('.card');
   if (!card) return;
   const id = card.dataset.id;
@@ -325,6 +415,20 @@ function keyInfo(m, a) {
   return out.slice(0, 4);
 }
 
+// Score en direct (ESPN) et état de la meilleure piste : en bonne voie / gagnée / perdue
+function liveHtml(m, t) {
+  const s = state.live && state.live[m.id];
+  if (!s || s.state === 'pre') return '';
+  const score = `${s.h} - ${s.a}`;
+  const ok = t ? tipResult(t.key, s.h, s.a) : null;
+  const tipState = ok == null ? ''
+    : s.state === 'post' ? (ok ? '<b class="tip-ok">✓ piste gagnée</b>' : '<b class="tip-ko">✗ piste perdue</b>')
+    : (ok ? '<span class="tip-ok">✓ en bonne voie</span>' : '<span class="muted">pas encore</span>');
+  return `<div class="c-live ${s.state}">
+    <span>${s.state === 'in' ? `🔴 ${esc(s.clock)}` : 'Terminé'}</span><b>${score}</b>${tipState}
+  </div>`;
+}
+
 // Fiche courte (par défaut) : heure, équipes, verdict, meilleure piste. Un appui ouvre la fiche complète.
 function compactHtml(m) {
   const a = state.analyses[m.id], v = a.verdict;
@@ -347,9 +451,10 @@ function compactHtml(m) {
       <span class="c-teams"><span class="c-names">${esc(m.home.name)} – ${esc(m.away.name)}</span><small>${m.comp.flag} ${esc(m.comp.name)}</small></span>
       <span class="badge ${v.code}">${esc(v.label)}</span>
     </button>
+    ${liveHtml(m, t)}
     <div class="c-line">${t ? `<span>${esc(t.label)}</span><b>${pct(t.p)}</b>` : `<span class="muted">${v.code === 'skip' ? 'Aucune piste retenue' : 'Pas de piste solide'}</span>`}</div>
     ${infos.length ? `<ul class="c-infos">${infos.map(i => `<li class="${i.k}">${esc(i.t)}</li>`).join('')}</ul>` : ''}
-    ${chips ? `<div class="c-chips">${chips}</div>` : ''}
+    <div class="c-chips">${chips}<button class="fav-btn${favs.has(m.id) ? ' on' : ''}" data-act="fav" aria-pressed="${favs.has(m.id)}">${favs.has(m.id) ? '★ Favori' : '☆ Favori'}</button></div>
   </article>`;
 }
 

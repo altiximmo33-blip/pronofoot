@@ -3,6 +3,7 @@
 import { analyzeMatch } from './model.js';
 import { load, save } from './store.js';
 import { parsePasted, mergeExtras } from './claude.js';
+import { ESPN_CODES, espnLiveScore } from './core.js';
 
 export const state = {
   settings: { mode: 'auto', notify: false, comps: [] },
@@ -40,6 +41,7 @@ export async function loadAll() {
     const now = Date.now();
     robot = d;
     state.matches = mergeExtras(d.matches || [], todayExtras()).map(m => ({ ...m, status: liveStatus(m, now) }));
+    applyLive();
     state.analyses = {};
     state.matches.forEach(m => { state.analyses[m.id] = analyzeMatch(m); });
     state.alerts = (d.events || []).map(e => ({ id: e.t + e.title, ...e }));
@@ -113,7 +115,38 @@ function buildBanner() {
   }
 }
 
+// --- Scores en direct (ESPN, interrogé directement par la page toutes les minutes) ---
+state.live = {};
+const ESPN_SITE = 'https://site.api.espn.com/apis/site/v2/sports/soccer/';
+
+function applyLive() {
+  state.matches.forEach(m => {
+    const s = state.live[m.id];
+    if (s) m.status = s.state === 'in' ? 'LIVE' : s.state === 'post' ? 'FT' : m.status;
+  });
+}
+
+async function pollLive() {
+  const now = Date.now();
+  const due = state.matches.filter(m => m.kickoff - now < 10 * 60000 && now - m.kickoff < 150 * 60000 && ESPN_CODES[m.comp && m.comp.af]);
+  if (!due.length) return;
+  const boards = {};
+  for (const m of due) {
+    const code = ESPN_CODES[m.comp.af];
+    const day = new Date(m.kickoff).toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' }).replace(/-/g, '');
+    try {
+      boards[code + day] = boards[code + day] || await fetch(`${ESPN_SITE}${code}/scoreboard?dates=${day}`).then(r => r.json());
+      const s = espnLiveScore(boards[code + day], m.home.name, m.away.name);
+      if (s) state.live[m.id] = s;
+    } catch { /* on réessaiera à la prochaine minute */ }
+  }
+  applyLive();
+  emit();
+}
+
 export async function start() {
   await loadAll();
-  setInterval(loadAll, 5 * 60000);
+  await pollLive();
+  setInterval(async () => { await loadAll(); applyLive(); emit(); }, 5 * 60000);
+  setInterval(pollLive, 60000);
 }

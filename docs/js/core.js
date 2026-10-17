@@ -228,6 +228,23 @@ export function espnCompetition(standingsJson, schedulesJson) {
   return buildCompetition({ standings: [{ type: 'TOTAL', table }], season: { currentMatchday: matchday } }, { matches }, null);
 }
 
+// Score en direct d'un match dans le programme ESPN : { h, a, state: 'pre' | 'in' | 'post', clock, detail }
+export function espnLiveScore(scoreboardJson, homeName, awayName) {
+  const id = espnFindEvent(scoreboardJson, homeName, awayName);
+  if (!id) return null;
+  const ev = (scoreboardJson.events || []).find(e => e.id === id);
+  const c = ev.competitions[0];
+  const h = c.competitors.find(x => x.homeAway === 'home'), a = c.competitors.find(x => x.homeAway === 'away');
+  const st = (c.status || ev.status || {});
+  const num = x => +((x && x.score && (x.score.value != null ? x.score.value : x.score.displayValue)) || x.score || 0);
+  return {
+    id, h: num(h), a: num(a),
+    state: (st.type && st.type.state) || 'pre',
+    clock: st.displayClock || '',
+    detail: (st.type && (st.type.shortDetail || st.type.description)) || '',
+  };
+}
+
 // Retrouve un match API-Football dans le programme ESPN du jour
 export function espnFindEvent(scoreboardJson, homeName, awayName) {
   for (const ev of scoreboardJson.events || []) {
@@ -315,6 +332,41 @@ export function topPicks(matches, analyses, bilanRates = {}) {
     out.push({ m, tip, official });
   }
   return out.sort((x, y) => y.tip.p - x.tip.p);
+}
+
+// ---------- Combinés du jour : sélections solides sans attendre les compositions ----------
+// Une seule piste par match, non évidente (55 à 66 %), avec des statistiques solides.
+// Points en plus : bel écart entre les équipes, absents sûrs chez l'adversaire (suspendu, buteur blessé).
+// Points en moins : piste qui dépend d'un joueur incertain, peu de matchs joués.
+export function comboLegs(matches, analyses) {
+  const legs = [];
+  for (const m of matches) {
+    const a = analyses[m.id];
+    if (!a || !m.stats || m.status !== 'NS' || a.verdict.code === 'skip') continue;
+    const games = Math.min(m.stats.home.p, m.stats.away.p);
+    if (games < 4) continue;
+    const tip = a.tips.filter(t => !String(t.key).startsWith('SC') && !t.easy && t.p >= 0.55).sort((x, y) => y.p - x.p)[0];
+    if (!tip) continue;
+    const reasons = [];
+    let score = tip.p * 100;
+    const gap = Math.abs(a.p.home - a.p.away);
+    if (gap >= 0.3) { score += 4; reasons.push('bel écart entre les deux équipes'); }
+    // Absents sûrs (confirmés le matin) : suspensions et buteurs blessés
+    for (const side of ['home', 'away']) {
+      const team = m[side].name;
+      const inj = (m.injuries && m.injuries[side]) || [];
+      const susp = inj.filter(i => /red card|yellow card|suspen/i.test(String(i.reason || '')));
+      if (susp.length) { score += 2; reasons.push(`${team} : ${susp.slice(0, 2).map(i => i.name).join(', ')} suspendu${susp.length > 1 ? 's' : ''}`); }
+      const keyOut = a.presence[side].players.filter(p => p.status === 'absent' && p.share >= 0.15);
+      if (keyOut.length) { score += 3; reasons.push(`${team} privé de ${keyOut.map(p => `${p.name} (${p.goals} buts)`).join(', ')}`); }
+      const doubt = a.presence[side].players.filter(p => p.status === 'incertain' && p.share >= 0.15);
+      if (doubt.length) { score -= 6; reasons.push(`attention : ${doubt.map(p => p.name).join(', ')} incertain (risque lié aux compos)`); }
+    }
+    if (games >= 6) score += 2;
+    if (['O25', 'U25', 'BTTS', 'NBTTS', 'O35'].includes(tip.key)) reasons.push(`${(a.lh + a.la).toFixed(1)} buts attendus`);
+    legs.push({ m, tip, score, reasons });
+  }
+  return legs.sort((x, y) => y.score - x.score);
 }
 
 export const hhmm = t => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris' });

@@ -70,16 +70,27 @@ const same = (a, b) => {
   return hit(a.home.name, b.home.name) && hit(a.away.name, b.away.name);
 };
 
-// Fusionne : un match Claude remplace le même match du robot (en gardant les compos officielles du robot)
+// Fusionne les matchs analysés par Claude avec ceux du robot :
+// - si le robot a des statistiques, on garde ses chiffres et on ajoute l'avis de Claude
+//   (note, absents supplémentaires, compositions si le robot ne les a pas) ;
+// - sinon, le match de Claude remplace celui du robot (en gardant les compos officielles du robot).
 export function mergeExtras(robotMatches, extras) {
   const out = [...robotMatches];
+  const union = (a, b) => [...a, ...b.filter(x => !a.some(y => norm(y.name).split(' ').pop() === norm(x.name).split(' ').pop()))];
   for (const e of extras) {
     const i = out.findIndex(m => m.source !== 'claude' && same(m, e) && Math.abs(m.kickoff - e.kickoff) < 3 * 3600000);
     if (i >= 0) {
       const r = out[i];
       const official = r.lineups && r.lineups.home && r.lineups.home.status === 'officielle';
-      // Si le robot a des statistiques et Claude non, on garde le robot et on ajoute juste la note
-      if (r.stats && !e.stats) { out[i] = { ...r, note: e.note }; continue; }
+      if (r.stats) {
+        out[i] = {
+          ...r,
+          note: e.note.replace('Ajouté depuis Claude', 'Avis de Claude'),
+          injuries: { home: union(r.injuries.home || [], e.injuries.home || []), away: union(r.injuries.away || [], e.injuries.away || []) },
+          lineups: official ? r.lineups : (e.lineups.home ? e.lineups : r.lineups),
+        };
+        continue;
+      }
       out[i] = { ...e, kickoff: r.kickoff, lineups: official ? r.lineups : e.lineups, injuries: r.injuries.home.length || r.injuries.away.length ? r.injuries : e.injuries };
     } else {
       out.push(e);
