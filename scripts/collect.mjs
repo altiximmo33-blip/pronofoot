@@ -108,19 +108,37 @@ function dailySummary(matches) {
 }
 
 // ---------- Compositions officielles ----------
+// Les compositions sortent au mieux 1 h avant : on cherche à partir de 45 min avant,
+// à chaque passage (toutes les 5 min), tous les matchs concernés en une seule requête.
+const LINEUPS_FROM_MIN = 45;
+
 async function lineupsPass(state) {
   const now = Date.now();
-  state.lineupTries = state.lineupTries || {};
   const isOfficial = m => m.lineups && m.lineups.home && m.lineups.home.status === 'officielle';
   const due = state.matches
-    .filter(m => !isOfficial(m) && m.kickoff - now <= 60 * 60000 && m.kickoff - now > -10 * 60000 && (state.lineupTries[m.id] || 0) < 4)
-    .sort((a, b) => (b.stats ? 1 : 0) - (a.stats ? 1 : 0) || a.kickoff - b.kickoff);
+    .filter(m => !isOfficial(m) && m.kickoff - now <= LINEUPS_FROM_MIN * 60000 && m.kickoff - now > -5 * 60000);
+  if (!due.length) return false;
+  console.log(`Compositions recherchées pour ${due.length} match(s)`);
   const found = [];
-  for (const m of due) {
+  for (let i = 0; i < due.length; i += 20) {
     if (afUsed >= AF_BUDGET) break;
-    state.lineupTries[m.id] = (state.lineupTries[m.id] || 0) + 1;
-    try { if (applyLineups(m, await af('fixtures/lineups', { fixture: m.fixtureId }))) found.push(m); } catch (e) { console.warn(e.message); break; }
+    const chunk = due.slice(i, i + 20);
+    try {
+      const j = await af('fixtures', { ids: chunk.map(m => m.fixtureId).join('-') });
+      for (const f of j.response || []) {
+        const m = chunk.find(x => x.fixtureId === f.fixture.id);
+        if (m && applyLineups(m, { response: f.lineups || [] })) found.push(m);
+      }
+    } catch (e) {
+      // Si la recherche groupée est refusée, on interroge les matchs un par un
+      console.warn('Recherche groupée impossible :', e.message);
+      for (const m of chunk) {
+        if (afUsed >= AF_BUDGET) break;
+        try { if (applyLineups(m, await af('fixtures/lineups', { fixture: m.fixtureId }))) found.push(m); } catch (err) { console.warn(err.message); break; }
+      }
+    }
   }
+  console.log(`${found.length} composition(s) trouvée(s)`);
   if (!found.length) return false;
 
   // Une notification par créneau
@@ -150,7 +168,7 @@ async function main() {
   if (!state || state.date !== today || FORCE) {
     if (parisHour() < 7 && !FORCE) { console.log('Trop tôt pour la collecte du jour.'); return; }
     const matches = await daily(today);
-    state = { date: today, generatedAt: new Date().toISOString(), afUsed: 0, matches, events: [], lineupTries: {} };
+    state = { date: today, generatedAt: new Date().toISOString(), afUsed: 0, matches, events: [] };
     const summary = dailySummary(matches);
     state.events.unshift({ t: Date.now(), level: 'info', title: 'Analyse du jour prête', body: summary.replace(/\n/g, ' | ') });
     await notify('PronoFoot : analyse du jour prête', summary);
@@ -158,9 +176,11 @@ async function main() {
   } else {
     afUsed = state.afUsed || 0;
   }
+  const usedBefore = afUsed;
   if (await lineupsPass(state)) changed = true;
 
-  if (!changed) { console.log('Rien de nouveau.'); return; }
+  // Le compteur de requêtes doit être enregistré même sans nouveauté (pour respecter le quota)
+  if (!changed && afUsed === usedBefore) { console.log('Rien de nouveau.'); return; }
   state.afUsed = afUsed;
   state.updatedAt = new Date().toISOString();
   state.events = state.events.slice(0, 60);
