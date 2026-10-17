@@ -167,6 +167,10 @@ main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
 .c-line { display: flex; justify-content: space-between; gap: 10px; padding: 2px 14px 8px 64px; font-size: 13.5px; }
 .c-line b { white-space: nowrap; }
 .c-chips { display: flex; gap: 5px; flex-wrap: wrap; padding: 0 14px 10px 64px; }
+.c-infos { list-style: none; margin: 0; padding: 0 14px 8px 64px; display: grid; gap: 3px; font-size: 12.5px; }
+.c-infos li { color: var(--muted); }
+.c-infos li.bad { color: var(--bad); font-weight: 600; }
+.c-infos li.ok { color: var(--go); font-weight: 600; }
 .skip-toggle { justify-self: start; padding: 4px 0; }
 
 #summary { gap: 6px; }
@@ -260,6 +264,6 @@ tr.value td { background: var(--value-soft); }
   .top { padding: 10px 16px; } .tabs { padding: 0 8px; } main { padding: 14px 16px 50px; }
   .status { order: 3; flex-basis: 100%; }
   .duel { grid-template-columns: 1fr auto; }
-  .c-line, .c-chips { padding-left: 14px; }
+  .c-line, .c-chips, .c-infos { padding-left: 14px; }
   .duel-facts { grid-column: 1 / -1; grid-row: 2; }
 }

@@ -280,6 +280,51 @@ function lineupChip(m) {
   return '<span class="chip">Compos probables</span>';
 }
 
+// Motifs d'absence (API-Football donne des libellés en anglais)
+function reasonFr(r) {
+  const s = String(r || '');
+  const map = [
+    [/red card/i, 'carton rouge'], [/yellow card/i, 'accumulation de cartons jaunes'], [/suspen/i, 'suspendu'],
+    [/knee/i, 'genou'], [/ankle/i, 'cheville'], [/hamstring/i, 'ischio-jambiers'], [/thigh/i, 'cuisse'], [/calf/i, 'mollet'],
+    [/groin/i, 'adducteurs'], [/muscle|muscular/i, 'blessure musculaire'], [/back/i, 'dos'], [/foot/i, 'pied'], [/shoulder/i, 'épaule'],
+    [/concussion|head/i, 'commotion'], [/illness|sick/i, 'malade'], [/knock/i, 'coup'], [/injury/i, 'blessure'],
+    [/international|national team/i, 'sélection'], [/personal|family/i, 'raison personnelle'], [/doubt|questionable/i, 'incertain'],
+  ];
+  const hit = map.find(([re]) => re.test(s));
+  return hit ? hit[1] : s;
+}
+const isSuspension = r => /red card|yellow card|suspen/i.test(String(r || ''));
+
+// Infos clés d'un match : suspensions, absents importants, buteur clé titulaire ou sur le banc
+function keyInfo(m, a) {
+  const out = [];
+  for (const side of ['home', 'away']) {
+    const team = m[side].name;
+    const inj = (m.injuries && m.injuries[side]) || [];
+    const pres = a.presence[side];
+    // Suspendus (buteurs ou non)
+    inj.filter(i => isSuspension(i.reason)).slice(0, 2)
+      .forEach(i => out.push({ k: 'bad', t: `🟥 ${team} : ${i.name} suspendu (${reasonFr(i.reason)})` }));
+    // Buteurs importants absents ou incertains
+    pres.players.filter(p => (p.status === 'absent' || p.status === 'incertain') && p.share >= 0.15 && !inj.some(i => i.name === p.name && isSuspension(i.reason)))
+      .slice(0, 2).forEach(p => out.push({ k: 'bad', t: `⚠ ${team} : ${p.name} ${p.status === 'incertain' ? 'incertain' : 'absent'} (${p.goals} buts, ${Math.round(p.share * 100)} % des buts)` }));
+    // Meilleur buteur de l'équipe : titulaire confirmé, sur le banc, ou à suivre
+    const star = [...pres.players].sort((x, y) => y.goals - x.goals)[0];
+    if (star && star.goals >= 2) {
+      const sc = [...a.scorers.home, ...a.scorers.away].find(s => s.name === star.name);
+      const chance = sc ? ` · ${Math.round(sc.p1 * 100)} % de marquer` : '';
+      if (star.status === 'titulaire') out.push({ k: 'ok', t: `✓ ${team} : ${star.name} titulaire (${star.goals} buts${chance})` });
+      else if (star.status === 'remplacant') out.push({ k: 'bad', t: `⚠ ${team} : ${star.name} sur le banc (${star.goals} buts)` });
+      else if (star.status === 'probable' && sc && sc.p1 >= 0.35) out.push({ k: '', t: `Buteur à suivre : ${star.name} (${team}, ${star.goals} buts${chance})` });
+    }
+  }
+  // Autres absents (sans détail) pour situer l'ampleur
+  const known = new Set(out.map(o => o.t));
+  const others = ['home', 'away'].map(s => ((m.injuries && m.injuries[s]) || []).filter(i => !isSuspension(i.reason) && ![...known].some(t => t.includes(i.name))).length);
+  if (others[0] + others[1] >= 3) out.push({ k: '', t: `Autres absents : ${others[0]} côté ${m.home.name}, ${others[1]} côté ${m.away.name}` });
+  return out.slice(0, 4);
+}
+
 // Fiche courte (par défaut) : heure, équipes, verdict, meilleure piste. Un appui ouvre la fiche complète.
 function compactHtml(m) {
   const a = state.analyses[m.id], v = a.verdict;
@@ -293,9 +338,9 @@ function compactHtml(m) {
     : '<span class="chip">Compos probables</span>';
   const chips = [
     compos,
-    ...v.flags.filter(f => f.t !== 'Peu de matchs').slice(0, 2).map(f => `<span class="chip">${esc(f.t)}</span>`),
-    abs ? `<span class="chip">${abs} absent${abs > 1 ? 's' : ''}</span>` : '',
+    ...v.flags.filter(f => f.t !== 'Peu de matchs' && !/gros absent/.test(f.t)).slice(0, 2).map(f => `<span class="chip">${esc(f.t)}</span>`),
   ].join('');
+  const infos = keyInfo(m, a);
   return `<article class="card compact v-${v.code}${state.hidden.has(m.id) ? ' is-hidden' : ''}" data-id="${esc(m.id)}">
     <button class="compact-main" data-act="open" aria-label="Ouvrir la fiche du match">
       <span class="c-time">${time}</span>
@@ -303,6 +348,7 @@ function compactHtml(m) {
       <span class="badge ${v.code}">${esc(v.label)}</span>
     </button>
     <div class="c-line">${t ? `<span>${esc(t.label)}</span><b>${pct(t.p)}</b>` : `<span class="muted">${v.code === 'skip' ? 'Aucune piste retenue' : 'Pas de piste solide'}</span>`}</div>
+    ${infos.length ? `<ul class="c-infos">${infos.map(i => `<li class="${i.k}">${esc(i.t)}</li>`).join('')}</ul>` : ''}
     ${chips ? `<div class="c-chips">${chips}</div>` : ''}
   </article>`;
 }
@@ -461,8 +507,8 @@ function detailHtml(m, a) {
   const scorers = [...a.scorers.home, ...a.scorers.away].sort((x, y) => y.p1 - x.p1);
   const absences = side => {
     const p = a.presence[side];
-    const rows = [...p.missing.map(x => ({ name: x.name, why: x.reason || stLabel[x.status], st: x.status, imp: `${x.goals} buts (${pct(x.share)})` })),
-      ...p.otherOut.map(x => ({ name: x.name, why: x.reason || 'Absent', st: 'absent', imp: '' }))];
+    const rows = [...p.missing.map(x => ({ name: x.name, why: x.reason ? reasonFr(x.reason) : stLabel[x.status], st: x.status, imp: `${x.goals} buts (${pct(x.share)})` })),
+      ...p.otherOut.map(x => ({ name: x.name, why: x.reason ? reasonFr(x.reason) : 'Absent', st: 'absent', imp: '' }))];
     return rows.length ? rows.map(r => `<tr><td>${esc(r.name)}</td><td><span class="st ${r.st}">${esc(stLabel[r.st])}</span></td><td class="small muted">${esc(r.why)}</td><td class="num small">${esc(r.imp)}</td></tr>`).join('')
       : '<tr><td colspan="4" class="muted">Aucune absence signalée</td></tr>';
   };
