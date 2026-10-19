@@ -48,6 +48,10 @@ export async function loadAll() {
     state.lastUpdate = Date.parse(d.updatedAt || d.generatedAt);
     state.error = null;
     await loadBilan();
+    try {
+      const s = await fetch('data/robot-status.json?t=' + Date.now(), { cache: 'no-store' });
+      state.robotStatus = s.ok ? await s.json() : null;
+    } catch { state.robotStatus = null; }
     buildBanner();
   } catch (e) {
     state.error = e.message;
@@ -112,6 +116,12 @@ function buildBanner() {
   state.bannerHtml = `<strong>Analyse automatique du ${day}.</strong> ${state.matches.length} matchs, dont ${withStats} avec statistiques complètes${fromClaude ? ` (${fromClaude} ajouté${fromClaude > 1 ? 's' : ''} depuis Claude)` : ''}. Les compositions officielles sont ajoutées automatiquement environ 1 h avant chaque match. Les pistes écartent les paris évidents.`;
   if (d.date && d.date !== parisToday()) {
     state.bannerHtml += ' <strong>Attention : ces données ne sont pas celles d\'aujourd\'hui.</strong> La collecte du jour démarre vers 7h.';
+  }
+  // Le robot a rencontré un problème récemment
+  const st = state.robotStatus;
+  if (st && st.ok === false && Date.now() - st.at < 6 * 3600000) {
+    const at = new Date(st.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+    state.bannerHtml += `<br><strong>⚠ Le robot a rencontré un problème à ${at} (${st.phase}).</strong> Il réessaie automatiquement toutes les 30 minutes.`;
   }
 }
 

@@ -19,6 +19,9 @@ const AF_BUDGET = 95; // l'offre gratuite d'API-Football autorise 100 requêtes 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DATA = path.join(ROOT, 'docs', 'data');
 const TODAY_FILE = path.join(DATA, 'today.json');
+// État du robot : en cas d'erreur, le message est enregistré ici (lisible par la page et pour le diagnostic)
+const STATUS_FILE = path.join(DATA, 'robot-status.json');
+let phase = 'demarrage';
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const parisDate = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' });
@@ -245,11 +248,38 @@ async function enrichEspn(matches, bilan, today) {
   }
 }
 
+// Programme du jour pris sur ESPN (si API-Football ne répond pas : quota épuisé, panne…)
+async function espnFixtures(today) {
+  const day = today.replace(/-/g, ''), out = [];
+  for (const [afId, code] of Object.entries(ESPN_CODES)) {
+    let sb;
+    try { sb = await espn(`${ESPN_SITE}${code}/scoreboard?dates=${day}`); } catch { continue; }
+    for (const ev of sb.events || []) {
+      const c = ev.competitions && ev.competitions[0];
+      if (!c || !c.status || c.status.type.state !== 'pre') continue;
+      if (new Date(ev.date).toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' }) !== today) continue;
+      const h = c.competitors.find(x => x.homeAway === 'home'), a = c.competitors.find(x => x.homeAway === 'away');
+      if (!h || !a) continue;
+      const team = x => ({ id: 'espn-' + x.team.id, name: x.team.displayName, logo: x.team.logo });
+      out.push({ fixture: { id: 'e' + ev.id, date: ev.date, status: { short: 'NS' } }, league: { id: +afId, season: null, round: '' }, teams: { home: team(h), away: team(a) } });
+    }
+    await sleep(100);
+  }
+  return out;
+}
+
 // ---------- Collecte du matin ----------
 async function daily(today) {
-  const fx = await af('fixtures', { date: today, timezone: 'Europe/Paris' });
-  const list = fx.response.filter(f => compByAf[f.league.id] && ['TBD', 'NS', 'PST'].includes(f.fixture.status.short));
-  console.log(`${list.length} matchs suivis aujourd'hui`);
+  let list, afDown = false;
+  try {
+    const fx = await af('fixtures', { date: today, timezone: 'Europe/Paris' });
+    list = fx.response.filter(f => compByAf[f.league.id] && ['TBD', 'NS', 'PST'].includes(f.fixture.status.short));
+  } catch (e) {
+    console.warn('API-Football indisponible, programme pris sur ESPN :', e.message);
+    list = await espnFixtures(today);
+    afDown = true;
+  }
+  console.log(`${list.length} matchs suivis aujourd'hui${afDown ? ' (programme ESPN)' : ''}`);
 
   const comps = {};
   for (const lid of [...new Set(list.map(f => f.league.id))]) {
@@ -281,7 +311,7 @@ async function daily(today) {
   const withStats = matches.filter(m => m.stats)
     .sort((a, b) => PRIORITY.indexOf(a.comp.af) - PRIORITY.indexOf(b.comp.af) || a.kickoff - b.kickoff);
   for (const m of withStats) {
-    if (afUsed >= 30) break;
+    if (afDown || typeof m.fixtureId !== 'number' || afUsed >= 30) break;
     try { applyInjuries(m, await af('injuries', { fixture: m.fixtureId })); } catch (e) { console.warn(e.message); }
   }
   return matches;
@@ -354,7 +384,7 @@ async function lineupsPass(state) {
     console.log(`ESPN : ${f.length}/${dueEspn.length} composition(s) trouvée(s)`);
   }
 
-  const due = state.matches.filter(m => !isOfficial(m) && inWindow(m, LINEUPS_FROM_MIN, LINEUPS_UNTIL_MIN));
+  const due = state.matches.filter(m => !isOfficial(m) && typeof m.fixtureId === 'number' && inWindow(m, LINEUPS_FROM_MIN, LINEUPS_UNTIL_MIN));
   if (due.length) console.log(`API-Football : compositions recherchées pour ${due.length} match(s)`);
   for (let i = 0; i < due.length; i += 20) {
     if (afUsed >= AF_BUDGET) break;
@@ -445,6 +475,9 @@ async function livePass(state) {
 // ---------- Programme principal ----------
 async function main() {
   if (!AF_KEY || !FD_KEY) throw new Error('Clés manquantes : APIFOOTBALL_KEY et FOOTBALLDATA_KEY doivent être dans les secrets GitHub.');
+  // Pause la nuit (1h-7h, heure de Paris) : pas de match, rien à faire
+  const hour = parisHour();
+  if (hour >= 1 && hour < 7 && !FORCE) { console.log('Pause de nuit (1h-7h).'); return; }
   await fs.mkdir(path.join(DATA, 'archive'), { recursive: true });
   const today = parisDate();
   let state = null;
@@ -453,6 +486,14 @@ async function main() {
   let changed = false;
   if (!state || state.date !== today || FORCE) {
     if (parisHour() < 7 && !FORCE) { console.log('Trop tôt pour la collecte du jour.'); return; }
+    // Après un échec de la collecte du matin, on attend 30 minutes avant de réessayer
+    // (sinon chaque passage toutes les 5 minutes consomme le quota pour rien)
+    const last = await readStatus();
+    if (!FORCE && last && last.ok === false && last.phase === 'collecte du matin' && last.date === today && Date.now() - last.at < 30 * 60000) {
+      console.log('Échec récent de la collecte du matin : nouvel essai dans 30 minutes.');
+      return;
+    }
+    phase = 'collecte du matin';
     // Bilan de la veille d'abord (il sert à corriger les analyses du jour)
     const bilan = await readBilan();
     let review = null;
@@ -472,6 +513,7 @@ async function main() {
   } else {
     afUsed = state.afUsed || 0;
   }
+  phase = 'compositions et scores en direct';
   const usedBefore = afUsed;
   if (await lineupsPass(state)) changed = true;
   try { if (await livePass(state)) changed = true; } catch (e) { console.warn('Scores en direct :', e.message); }
@@ -487,4 +529,21 @@ async function main() {
   console.log(`Enregistré (${afUsed} requêtes API-Football utilisées aujourd'hui).`);
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+// ---------- État du robot (erreurs lisibles par la page et pour le diagnostic) ----------
+async function readStatus() {
+  try { return JSON.parse(await fs.readFile(STATUS_FILE, 'utf8')); } catch { return null; }
+}
+
+main()
+  .then(async () => {
+    // Retour à la normale : on efface l'alerte (une seule fois, pour ne pas enregistrer à chaque passage)
+    const last = await readStatus();
+    if (last && last.ok === false) await fs.writeFile(STATUS_FILE, JSON.stringify({ ok: true, at: Date.now() }));
+  })
+  .catch(async e => {
+    console.error(e);
+    const status = { ok: false, at: Date.now(), date: parisDate(), phase, error: String((e && e.stack) || e).slice(0, 1500) };
+    try { await fs.mkdir(DATA, { recursive: true }); await fs.writeFile(STATUS_FILE, JSON.stringify(status)); } catch { /* rien */ }
+    // On termine « sans erreur » pour que l'étape Enregistrer sauvegarde ce diagnostic
+    process.exit(0);
+  });
