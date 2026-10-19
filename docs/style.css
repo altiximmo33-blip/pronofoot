@@ -318,3 +318,39 @@ tr.value td { background: var(--value-soft); }
   .c-live { margin-left: 14px; }
   .duel-facts { grid-column: 1 / -1; grid-row: 2; }
 }
+
+/* --- Fiches simplifiées (19/10) --- */
+.chip.tap { cursor: pointer; font-family: inherit; line-height: 1.5; }
+.chip.tap .i { opacity: .6; font-weight: 700; }
+.chip.tap.on { outline: 2px solid currentColor; outline-offset: 1px; }
+.why-box { margin: 8px 14px 10px; padding: 9px 12px; border-radius: 9px; background: var(--panel2); border-left: 3px solid var(--accent); font-size: 13px; line-height: 1.45; }
+.card-main .why-box { margin: 8px 0 0; }
+.alert-box { margin: 4px 14px 8px; padding: 8px 12px; border-radius: 9px; background: var(--bad-soft); color: var(--bad); font-size: 13px; }
+.alert-box b { display: block; margin-bottom: 2px; }
+.alert-box ul { margin: 0; padding-left: 18px; display: grid; gap: 2px; }
+.card-infos { padding: 4px 2px 0; }
+.card-infos .c-infos { padding: 0 14px 8px; }
+.tips .why { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+.sec-title { margin: 0; font-size: 12px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); }
+.cmp tr.xg-row th, .cmp tr.xg-row td { background: var(--accent-soft); }
+.goal-dist .gd-title { font-size: 12px; color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+.gd-bars { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; align-items: end; }
+.gd { display: flex; flex-direction: column; align-items: center; justify-content: flex-end; font-size: 12px; line-height: 1.3; }
+.gd i { display: block; width: 100%; max-width: 54px; background: var(--draw); border-radius: 5px 5px 0 0; min-height: 3px; opacity: .55; }
+.gd.best i { background: var(--accent); opacity: 1; }
+.gd b { margin-top: 3px; }
+.gd span { color: var(--muted); }
+.detail details.sec { grid-column: 1 / -1; margin: 0; background: var(--panel2); border-radius: 10px; }
+.detail details.sec > summary { padding: 10px 14px; color: var(--text); font-size: 14px; list-style: none; }
+.detail details.sec > summary::after { content: ' ▾'; color: var(--muted); }
+.detail details.sec[open] > summary::after { content: ' ▴'; }
+.detail .sec-body { padding: 0 14px 12px; }
+.detail .sec-body p { margin: 0 0 7px; line-height: 1.5; }
+.detail { gap: 8px; }
+@media (max-width: 520px) {
+  .cmp { min-width: 0; }
+  .cmp th, .cmp td { padding: 6px 4px; }
+  .cmp tbody th { width: 34%; font-size: 12px; }
+  .cmp td small { white-space: normal; }
+  .cmp td .val { font-size: 16px; }
+}

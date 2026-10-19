@@ -167,7 +167,11 @@ function teamPresence(m, side) {
     } else if (inj) {
       status = /question|doubt|incertain/i.test(inj.type || '') ? 'incertain' : 'absent';
     }
-    return { ...p, status, reason: inj ? inj.reason : (status === 'absent' ? 'Hors groupe' : ''), share: Math.min(p.goals / teamGoals, 0.7) };
+    // Part des buts de l'équipe, calculée par match joué quand on le sait (joueur arrivé en cours
+    // de saison, retour de blessure), sans descendre sous la moitié des matchs de l'équipe
+    const games = m.teamGames && m.teamGames[side];
+    const share = p.played && games ? (p.goals / Math.max(p.played, games / 2)) / (teamGoals / games) : p.goals / teamGoals;
+    return { ...p, team: m[side].name, status, reason: inj ? inj.reason : (status === 'absent' ? 'Hors groupe' : ''), share: Math.min(share, 0.7) };
   });
 
   // Impact offensif : part des buts de l'équipe que représentent les absents
@@ -182,7 +186,15 @@ function teamPresence(m, side) {
   });
   // Absents qui ne sont pas des buteurs (défenseurs, gardiens...) : léger impact défensif
   const otherOut = injuries.filter(i => !pool.some(p => samePlayer(i, p)) && !/question|doubt/i.test(i.type || ''));
-  return { official, players, missing, otherOut, factor: Math.max(factor, 0.6), defPenalty: 1 + Math.min(otherOut.length * 0.03, 0.12) };
+  // Turn-over : titulaires du dernier match qui ne démarrent pas aujourd'hui
+  let rotation = null, rotFactor = 1;
+  const prev = m.lastXI && m.lastXI[side];
+  if (official && prev && prev.length >= 11) {
+    const out = prev.filter(n => !lu.startXI.some(x => samePlayer(x, { name: n })));
+    rotation = { changes: out.length, out };
+    if (out.length >= 5) rotFactor = 0.95; // équipe remaniée : automatismes perdus
+  }
+  return { official, players, missing, otherOut, rotation, absFactor: Math.max(factor, 0.6), factor: Math.max(factor, 0.6) * rotFactor, defPenalty: 1 + Math.min(otherOut.length * 0.03, 0.12) + (rotFactor < 1 ? 0.03 : 0) };
 }
 
 // --- 3. Forme -----------------------------------------------------------------
@@ -268,10 +280,11 @@ export function analyzeMatch(m) {
   // Buteurs : part des buts du joueur x buts attendus de l'équipe x temps de jeu probable
   // (un titulaire est souvent remplacé avant la fin, d'où 0,9)
   const presenceMult = { titulaire: 0.9, probable: 0.8, incertain: 0.45, remplacant: 0.3, absent: 0 };
+  // Les buts habituels des absents se reportent sur les joueurs présents (division par pres.absFactor)
   const scorerList = (pres, lambda, team) => pres.players
     .filter(p => p.status !== 'absent')
     .map(p => {
-      const mu = lambda * p.share * presenceMult[p.status];
+      const mu = lambda * Math.min(p.share / pres.absFactor, 0.7) * presenceMult[p.status];
       return { ...p, team, p1: 1 - Math.exp(-mu), p2: 1 - Math.exp(-mu) * (1 + mu) };
     })
     .sort((x, y) => y.p1 - x.p1).slice(0, 4);
@@ -283,6 +296,11 @@ export function analyzeMatch(m) {
     lh, la, method: base.method, idx: base.idx, sources: base.sources, marketNow: mk, modelP,
     p: { home: o.home, draw: o.draw, away: o.away },
     markets, scores: scores.slice(0, 6), scorers,
+    // Nombre total de buts : plus parlant que les scores exacts (qui sont tous peu probables un par un)
+    goalDist: [
+      { t: '0-1', p: 1 - over(1.5) }, { t: '2', p: over(1.5) - over(2.5) },
+      { t: '3', p: over(2.5) - over(3.5) }, { t: '4+', p: over(3.5) },
+    ],
     presence: { home: ph, away: pa },
     verdict, tips: verdict.tips, text: buildText(ctx, verdict),
   };
@@ -304,8 +322,9 @@ function buildVerdict(c) {
   const best = keys => markets.filter(x => keys.includes(x.key) && playable(x)).sort((a, b) => (b.edge || 0) - (a.edge || 0) || b.p - a.p)[0];
   const tips = [best(RESULT), best(GOALS)].filter(Boolean);
   const sc = [...c.scorers.home, ...c.scorers.away].sort((a, b) => b.p1 - a.p1);
-  const scorerTip = sc.find(p => p.p1 >= 0.35 && p.p1 < 0.7);
-  if (scorerTip) tips.push({ key: 'SC', label: `${scorerTip.name} buteur`, p: scorerTip.p1, edge: null });
+  // Pari buteur : à partir de 30 % (cote d'environ 3), titulaire confirmé en priorité
+  const scorerTip = sc.find(p => p.status === 'titulaire' && p.p1 >= 0.3 && p.p1 < 0.7) || sc.find(p => p.p1 >= 0.3 && p.p1 < 0.7);
+  if (scorerTip) tips.push({ key: 'SC', label: `${scorerTip.name} buteur${scorerTip.status === 'titulaire' ? ' (titulaire)' : ''}`, p: scorerTip.p1, edge: null, team: scorerTip.team });
   const dbl = sc.find(p => p.p2 >= 0.12);
   if (dbl) tips.push({ key: 'SC2', label: `${dbl.name} doublé (pari osé)`, p: dbl.p2, edge: null });
   // Les paris évidents, cités seulement pour expliquer pourquoi on les écarte
@@ -337,18 +356,30 @@ function buildVerdict(c) {
     return { code: 'skip', label: 'Pas de statistiques', score: 0, tips, flags: [], values: [], obvious: false, easy: [] };
   }
 
+  // Étiquettes, chacune avec son explication (affichée quand on appuie dessus)
+  const H = c.m.home.name, A = c.m.away.name, favName = o.home >= o.away ? H : A, dogName = o.home >= o.away ? A : H;
+  const hs = s && s.home, as = s && s.away, per = (x, n) => n ? (x / n).toFixed(1).replace('.', ',') : '–';
+  const venueLine = hs && as ? `${H} marque ${per(hs.gf, hs.p)} et encaisse ${per(hs.ga, hs.p)} but par match à domicile ; ${A} marque ${per(as.gf, as.p)} et encaisse ${per(as.ga, as.p)} à l'extérieur.` : '';
+  const totG = (c.lh + c.la).toFixed(1).replace('.', ',');
   const flags = [];
-  if (gap >= 0.35) flags.push({ t: 'Gros écart', k: 'gap' });
-  if (gap < 0.12) flags.push({ t: 'Match serré', k: 'tight' });
-  if (c.overs.o25 >= 0.6) flags.push({ t: 'Match à buts', k: 'goals' });
-  if (c.overs.o25 <= 0.4) flags.push({ t: 'Match fermé', k: 'closed' });
+  if (gap >= 0.35) flags.push({ t: 'Gros écart', k: 'gap', why: `${favName} gagne dans ${pct(fav)} des cas, ${dogName} dans ${pct(Math.min(o.home, o.away))}. ${venueLine}` });
+  if (gap < 0.12) flags.push({ t: 'Match serré', k: 'tight', why: `${H} ${pct(o.home)}, nul ${pct(o.draw)}, ${A} ${pct(o.away)} : aucun favori net, le résultat est risqué. ${venueLine}` });
+  if (c.overs.o25 >= 0.6) flags.push({ t: 'Match à buts', k: 'goals', why: `${totG} buts attendus (${c.lh.toFixed(1).replace('.', ',')} pour ${H}, ${c.la.toFixed(1).replace('.', ',')} pour ${A}). Plus de 2,5 buts : ${pct(c.overs.o25)}, les deux marquent : ${pct(c.btts)}. ${venueLine}` });
+  if (c.overs.o25 <= 0.4) flags.push({ t: 'Match fermé', k: 'closed', why: `Seulement ${totG} buts attendus. Moins de 2,5 buts : ${pct(1 - c.overs.o25)}. ${venueLine}` });
   const bigOut = [...ph.missing, ...pa.missing].filter(p => p.share >= 0.15 && p.status !== 'incertain');
-  if (bigOut.length) flags.push({ t: `${bigOut.length} gros absent${bigOut.length > 1 ? 's' : ''}`, k: 'absent' });
-  if (values.length) flags.push({ t: 'Cote intéressante', k: 'value' });
-  if (few) flags.push({ t: 'Peu de matchs', k: 'tight' });
-  if ((c.m.tierFlags || []).length) flags.push({ t: 'Forme trompeuse', k: 'value' });
-
-  if (obvious) flags.push({ t: 'Favori évident', k: 'gap' });
+  if (bigOut.length) flags.push({ t: `${bigOut.length} gros absent${bigOut.length > 1 ? 's' : ''}`, k: 'absent', why: bigOut.map(p => `${p.name} (${p.team || ''}${p.status === 'remplacant' ? ', sur le banc' : ''}) : ${p.goals} buts, ${pct(p.share)} des buts de son équipe.`).join(' ') + ' L\'attaque concernée est revue à la baisse.' });
+  if (values.length) flags.push({ t: 'Cote intéressante', k: 'value', why: values.map(x => `${x.label} : cote ${x.odd.toFixed(2).replace('.', ',')}, alors qu'on l'estime à ${pct(x.p)} (cote juste ${(1 / x.p).toFixed(2).replace('.', ',')}).`).join(' ') });
+  if ((c.m.tierFlags || []).length) flags.push({ t: 'Forme trompeuse', k: 'value', why: c.m.tierFlags.map(t => t.replace(/^Forme trompeuse : /, '')).join(' ') });
+  ['home', 'away'].forEach(side => {
+    const p = c.m.perf && c.m.perf[side];
+    if (!p || !p.label) return;
+    const name = c.m[side].name, n = p.n, f1 = x => x.toFixed(1).replace('.', ',');
+    const facts = `${f1(p.sotF)} tirs cadrés par match pour, ${f1(p.sotA)} contre, ${Math.round(p.poss)} % de possession sur ses ${n} derniers matchs.`;
+    const lbl = { malchanceuse: `${name} malchanceuse`, chanceuse: `${name} chanceuse`, 'en pleine bourre': `${name} en feu`, 'en galère': `${name} en galère` }[p.label];
+    const why = { malchanceuse: 'Elle se crée plus d\'occasions que ses résultats ne le montrent : ses résultats devraient s\'améliorer.', chanceuse: 'Ses résultats sont meilleurs que son jeu : attention au retour sur terre.', 'en pleine bourre': 'Elle domine ses matchs et les gagne.', 'en galère': 'Elle subit ses matchs et les perd.' }[p.label];
+    if (lbl) flags.push({ t: lbl, k: p.label === 'chanceuse' || p.label === 'en galère' ? 'warn' : 'value', why: `${why} ${facts}` });
+  });
+  if (obvious) flags.push({ t: 'Favori évident', k: 'gap', why: `${favName} gagne dans ${pct(fav)} des cas : la victoire simple est trop mal payée pour être intéressante. Les pistes cherchent un angle à côté (écart, buts).` });
   return { code, label, score, tips: tips.slice(0, 4), flags, values, obvious, easy };
 }
 

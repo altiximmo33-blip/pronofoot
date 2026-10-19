@@ -48,7 +48,7 @@ export function buildCompetition(standingsJson, matchesJson, scorersJson) {
   for (const x of (scorersJson && scorersJson.scorers) || []) {
     const tid = x.team && x.team.id;
     if (!tid) continue;
-    (scorers[tid] = scorers[tid] || []).push({ id: null, name: x.player.name, goals: x.goals || 0, pos: 'A' });
+    (scorers[tid] = scorers[tid] || []).push({ id: null, name: x.player.name, goals: x.goals || 0, played: x.playedMatches || null, pos: 'A' });
   }
   return { rows, avg, pos, n, tierOf, scorers, matchday: (standingsJson.season && standingsJson.season.currentMatchday) || null };
 }
@@ -138,8 +138,9 @@ export function buildMatch(f, C) {
     home: { ...teamSplit(C.rows, th), avg: C.avg },
     away: { ...teamSplit(C.rows, ta), avg: C.avg },
   };
-  m.scorers = { home: (C.scorers[th.id] || []).slice(0, 4), away: (C.scorers[ta.id] || []).slice(0, 4) };
+  m.scorers = { home: (C.scorers[th.id] || []).slice(0, 5), away: (C.scorers[ta.id] || []).slice(0, 5) };
   m.teamGoals = { home: th.home.gf + th.away.gf, away: ta.home.gf + ta.away.gf };
+  m.teamGames = { home: th.home.p + th.away.p, away: ta.home.p + ta.away.p };
   const formOf = t => t.games.slice(0, 5).reverse().map(g => g.gf > g.ga ? 'W' : g.gf === g.ga ? 'D' : 'L').join('');
   m.form = { home: formOf(th), away: formOf(ta) };
 
@@ -320,7 +321,17 @@ export const ESPN_CODES = {
 const espnTeam = t => ({ id: 'espn-' + t.id, name: t.displayName || t.name, shortName: t.shortDisplayName || t.name, tla: t.abbreviation });
 
 // Transforme le classement + les calendriers d'équipes ESPN au format attendu par buildCompetition
-export function espnCompetition(standingsJson, schedulesJson) {
+// Meilleurs buteurs ESPN (/statistics), au format football-data.org
+export function espnScorers(statsJson) {
+  const cat = ((statsJson && statsJson.stats) || []).find(s => s.name === 'goalsLeaders');
+  const scorers = ((cat && cat.leaders) || []).filter(l => l.athlete && l.athlete.team).map(l => {
+    const played = /M:\s*(\d+)/.exec(l.shortDisplayValue || '') || /Matches:\s*(\d+)/.exec(l.displayValue || '');
+    return { player: { name: l.athlete.displayName }, team: { id: 'espn-' + l.athlete.team.id }, goals: +l.value || 0, playedMatches: played ? +played[1] : null };
+  });
+  return { scorers };
+}
+
+export function espnCompetition(standingsJson, schedulesJson, scorersJson = null) {
   const groups = standingsJson.children || [standingsJson];
   const table = [];
   groups.forEach(g => ((g.standings && g.standings.entries) || []).forEach(e => {
@@ -350,7 +361,7 @@ export function espnCompetition(standingsJson, schedulesJson) {
   }
   // Journée en cours estimée : nombre de matchs joués par équipe en moyenne
   const matchday = table.length ? Math.round((matches.length * 2) / table.length) : null;
-  return buildCompetition({ standings: [{ type: 'TOTAL', table }], season: { currentMatchday: matchday } }, { matches }, null);
+  return buildCompetition({ standings: [{ type: 'TOTAL', table }], season: { currentMatchday: matchday } }, { matches }, scorersJson);
 }
 
 // Identifiants ESPN du match et des deux équipes
@@ -400,9 +411,11 @@ export function applyEspnLineups(m, summaryJson) {
     const xi = players.filter(p => p.starter);
     if (xi.length < 11) return null;
     const name = p => (p.athlete && (p.athlete.displayName || p.athlete.fullName)) || '';
+    // ESPN indique parfois « SUB » comme poste des titulaires : on l'ignore
+    const pos = p => { const a = p.position && p.position.abbreviation; return a && a !== 'SUB' ? a : ''; };
     return {
       status: 'officielle', formation: r.formation || '', source: 'ESPN', at: Date.now(),
-      startXI: xi.map(p => ({ id: null, name: name(p), pos: p.position && p.position.abbreviation })),
+      startXI: xi.map(p => ({ id: null, name: name(p), pos: pos(p) })),
       subs: players.filter(p => !p.starter).map(p => ({ id: null, name: name(p), pos: p.position && p.position.abbreviation })),
     };
   };
@@ -410,6 +423,13 @@ export function applyEspnLineups(m, summaryJson) {
   const lh = h && conv(h), la = a && conv(a);
   if (lh && la) { m.lineups = { home: lh, away: la }; return true; }
   return false;
+}
+
+// Titulaires d'une équipe (identifiant ESPN) dans le résumé d'un match joué
+export function espnStartersOf(summaryJson, espnTeamId) {
+  const r = (summaryJson.rosters || []).find(x => x.team && String(x.team.id) === String(espnTeamId));
+  const xi = r ? (r.roster || []).filter(p => p.starter).map(p => (p.athlete && (p.athlete.displayName || p.athlete.fullName)) || '') : [];
+  return xi.length >= 11 ? xi : null;
 }
 
 // ---------- Forme réelle : tirs cadrés et possession des derniers matchs (ESPN) ----------

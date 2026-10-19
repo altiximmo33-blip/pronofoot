@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeMatch } from '../docs/js/model.js';
 import { compByAf } from '../docs/js/config.js';
-import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot, FDCOUK_CODES, fdcoukCompetition, fdcoukForMatch, fdcoukUpcomingOdds } from '../docs/js/core.js';
+import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnScorers, espnStartersOf, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot, FDCOUK_CODES, fdcoukCompetition, fdcoukForMatch, fdcoukUpcomingOdds } from '../docs/js/core.js';
 
 const AF_KEY = process.env.APIFOOTBALL_KEY;
 const FD_KEY = process.env.FOOTBALLDATA_KEY;
@@ -85,7 +85,10 @@ async function espnLoadCompetition(code) {
     try { schedules.push(await espn(`${ESPN_SITE}${code}/teams/${id}/schedule`)); } catch (e) { console.warn(e.message); }
     await sleep(120);
   }
-  return espnCompetition(st, schedules);
+  // Meilleurs buteurs du championnat (pour les paris buteur)
+  let scorers = null;
+  try { scorers = espnScorers(await espn(`${ESPN_SITE}${code}/statistics`)); } catch (e) { console.warn(e.message); }
+  return espnCompetition(st, schedules, scorers);
 }
 
 async function notify(title, message) {
@@ -287,6 +290,14 @@ async function enrichEspn(matches, bilan, today) {
           await sleep(100);
         }
         mem.perf = mem.perf.sort((x, y) => Date.parse(x.date) - Date.parse(y.date)).slice(-10);
+        // Onze de départ du dernier match (pour repérer un gros turn-over avec la compo officielle)
+        if (done[0] && (!mem.lastXI || mem.lastXI.ev !== done[0].id)) {
+          try {
+            const xi = espnStartersOf(await espn(`${ESPN_SITE}${code}/summary?event=${done[0].id}`), espnId);
+            if (xi) mem.lastXI = { ev: done[0].id, date: done[0].date, names: xi };
+          } catch { /* pas de composition pour ce match */ }
+        }
+        if (mem.lastXI && done[0] && mem.lastXI.ev === done[0].id) (m.lastXI = m.lastXI || {})[side] = mem.lastXI.names;
       } catch (e) { console.warn(e.message); }
 
       // Forme réelle
