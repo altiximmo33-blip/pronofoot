@@ -65,31 +65,75 @@ const PRIOR = 8, VENUE_WEIGHT = 0.5, HOME_BOOST = 1.08, GOAL_LEVEL = 1.05;
 const shrink = (v, n) => (v * n + 1 * PRIOR) / (n + PRIOR);
 
 // --- 1. Buts attendus de base ------------------------------------------------
+// Calcul générique (buts réels, xG ou « buts attendus selon le marché ») :
+// bilan du match (domicile / extérieur) mêlé à toute la saison, ramené vers la moyenne s'il y a peu de matchs.
+function lambdaFrom(s, ts, prior = PRIOR) {
+  if (!s || !s.home || !s.away || !(s.home.p > 0) || !(s.away.p > 0) || !s.avgHome || !s.avgAway) return null;
+  const sh = (v, n) => (v * n + prior) / (n + prior);
+  let attH = s.home.gf / s.home.p / s.avgHome, defH = s.home.ga / s.home.p / s.avgAway;
+  let attA = s.away.gf / s.away.p / s.avgAway, defA = s.away.ga / s.away.p / s.avgHome;
+  let nH = s.home.p, nA = s.away.p;
+  if (ts && ts.home && ts.away && ts.home.away && ts.away.home && ts.home.away.p > 0 && ts.away.home.p > 0) {
+    const L = (s.avgHome + s.avgAway) / 2;
+    const all = (t, k) => (t.home[k] + t.away[k]) / (t.home.p + t.away.p) / L;
+    const w = VENUE_WEIGHT;
+    attH = w * attH + (1 - w) * all(ts.home, 'gf'); defH = w * defH + (1 - w) * all(ts.home, 'ga');
+    attA = w * attA + (1 - w) * all(ts.away, 'gf'); defA = w * defA + (1 - w) * all(ts.away, 'ga');
+    nH = ts.home.home.p + ts.home.away.p; nA = ts.away.home.p + ts.away.away.p;
+  }
+  attH = sh(attH, nH); defH = sh(defH, nH); attA = sh(attA, nA); defA = sh(defA, nA);
+  return { lh: s.avgHome * attH * defA, la: s.avgAway * attA * defH, idx: { attH, defH, attA, defA } };
+}
+
+// Poids des trois sources (renormalisés selon ce qui est disponible) :
+// le marché est le signal le plus fiable, puis les xG, puis les buts réels.
+const W_GOALS = 0.35, W_XG = 0.25, W_MARKET = 0.40;
+
 function baseExpectedGoals(m) {
-  const s = m.stats;
-  if (s && s.home && s.away && s.home.p > 0 && s.away.p > 0) {
-    let attH = s.home.gf / s.home.p / s.avgHome, defH = s.home.ga / s.home.p / s.avgAway;
-    let attA = s.away.gf / s.away.p / s.avgAway, defA = s.away.ga / s.away.p / s.avgHome;
-    let nH = s.home.p, nA = s.away.p;
-    // Toute la saison (domicile + extérieur) quand elle est connue
-    const ts = m.teamStats;
-    if (ts && ts.home && ts.away && ts.home.away && ts.away.home && ts.home.away.p > 0 && ts.away.home.p > 0) {
-      const L = (s.avgHome + s.avgAway) / 2;
-      const all = (t, k) => (t.home[k] + t.away[k]) / (t.home.p + t.away.p) / L;
-      const w = VENUE_WEIGHT;
-      attH = w * attH + (1 - w) * all(ts.home, 'gf'); defH = w * defH + (1 - w) * all(ts.home, 'ga');
-      attA = w * attA + (1 - w) * all(ts.away, 'gf'); defA = w * defA + (1 - w) * all(ts.away, 'ga');
-      nH = ts.home.home.p + ts.home.away.p; nA = ts.away.home.p + ts.away.away.p;
-    }
-    attH = shrink(attH, nH); defH = shrink(defH, nH); attA = shrink(attA, nA); defA = shrink(defA, nA);
+  const G = lambdaFrom(m.stats, m.teamStats);
+  if (G) {
+    const parts = [{ w: W_GOALS, lh: G.lh * HOME_BOOST * GOAL_LEVEL, la: G.la * GOAL_LEVEL }];
+    const X = m.xg ? lambdaFrom(m.xg, m.xg.teamStats) : null;
+    if (X) parts.push({ w: W_XG, lh: X.lh * HOME_BOOST * GOAL_LEVEL, la: X.la * GOAL_LEVEL });
+    // Le marché intègre déjà l'avantage du terrain : pas de correction
+    const M = m.market ? lambdaFrom(m.market, m.market.teamStats, 3) : null;
+    if (M) parts.push({ w: W_MARKET, lh: M.lh, la: M.la });
+    const W = parts.reduce((s, p) => s + p.w, 0);
     return {
-      lh: s.avgHome * HOME_BOOST * GOAL_LEVEL * attH * defA, la: s.avgAway * GOAL_LEVEL * attA * defH, method: 'stats',
-      idx: { attH, defH, attA, defA },
+      lh: parts.reduce((s, p) => s + p.w * p.lh, 0) / W, la: parts.reduce((s, p) => s + p.w * p.la, 0) / W,
+      method: 'stats', idx: G.idx, sources: { goals: G, xg: X, market: M },
     };
   }
   const pc = m.apiPrediction && m.apiPrediction.percent;
   if (pc && pc.home + pc.away > 0) return { ...fitToPercent(pc), method: 'prediction' };
   return { lh: 1.45, la: 1.15, method: 'defaut' };
+}
+
+// --- Cotes du jour : probabilités du marché (marge retirée) et mélange avec notre estimation ---
+const MARKET_MIX = 0.5;
+function marketTargets(odds) {
+  const h = odds && odds.h2h;
+  if (!h || !(h.home > 1 && h.draw > 1 && h.away > 1)) return null;
+  const s = 1 / h.home + 1 / h.draw + 1 / h.away;
+  const t = odds.totals && odds.totals['2.5'];
+  const pO = t && t.over > 1 && t.under > 1 ? (1 / t.over) / (1 / t.over + 1 / t.under) : null;
+  return { pH: (1 / h.home) / s, pD: (1 / h.draw) / s, pA: (1 / h.away) / s, pO };
+}
+function over25(M) { let s = 0; for (let h = 0; h <= MAX_GOALS; h++) for (let a = 0; a <= MAX_GOALS; a++) if (h + a > 2) s += M[h][a]; return s; }
+let FIT_GRID = null;
+function fitTargets(pH, pA, pO) {
+  if (!FIT_GRID) {
+    FIT_GRID = [];
+    for (let lh = 0.2; lh <= 4.01; lh += 0.05) for (let la = 0.2; la <= 4.01; la += 0.05) {
+      const o = outcome(lh, la); FIT_GRID.push([lh, la, o.home, o.away, over25(o.m)]);
+    }
+  }
+  let best = [1.4, 1.1], err = 9;
+  for (const [lh, la, H, A, O] of FIT_GRID) {
+    const e = (H - pH) ** 2 + (A - pA) ** 2 + (pO == null ? 0 : (O - pO) ** 2);
+    if (e < err) { err = e; best = [lh, la]; }
+  }
+  return best;
 }
 
 // Retrouve des buts attendus cohérents avec des pourcentages 1N2 connus
@@ -158,8 +202,22 @@ export function analyzeMatch(m) {
 
   // m.adj : ajustement selon le comportement face au niveau de l'adversaire du jour (±15 % max)
   const adj = m.adj || {};
-  const lh = base.lh * ph.factor * formFactor(m.form && m.form.home) * pa.defPenalty * (adj.home || 1);
-  const la = base.la * pa.factor * formFactor(m.form && m.form.away) * ph.defPenalty * (adj.away || 1);
+  let lh = base.lh * ph.factor * formFactor(m.form && m.form.home) * pa.defPenalty * (adj.home || 1);
+  let la = base.la * pa.factor * formFactor(m.form && m.form.away) * ph.defPenalty * (adj.away || 1);
+  // Cotes du jour connues : on mélange notre estimation avec celle du marché (les gros écarts
+  // sont presque toujours des erreurs du modèle ; seuls les écarts modérés restent des « bonnes cotes »)
+  const mk = marketTargets(m.odds);
+  let modelP = null;
+  if (mk) {
+    const o0 = outcome(lh, la);
+    modelP = { home: o0.home, draw: o0.draw, away: o0.away, o25: over25(o0.m) };
+    const fit = fitTargets(
+      MARKET_MIX * mk.pH + (1 - MARKET_MIX) * o0.home,
+      MARKET_MIX * mk.pA + (1 - MARKET_MIX) * o0.away,
+      mk.pO == null ? null : MARKET_MIX * mk.pO + (1 - MARKET_MIX) * modelP.o25,
+    );
+    lh = fit[0]; la = fit[1];
+  }
   const o = outcome(lh, la);
   const M = o.m;
 
@@ -222,7 +280,7 @@ export function analyzeMatch(m) {
   const ctx = { m, base, lh, la, o, ph, pa, markets, scores, scorers, overs: { o25: over(2.5), o35: over(3.5) }, btts };
   const verdict = buildVerdict(ctx);
   return {
-    lh, la, method: base.method, idx: base.idx,
+    lh, la, method: base.method, idx: base.idx, sources: base.sources, marketNow: mk, modelP,
     p: { home: o.home, draw: o.draw, away: o.away },
     markets, scores: scores.slice(0, 6), scorers,
     presence: { home: ph, away: pa },
@@ -241,7 +299,8 @@ function buildVerdict(c) {
   // moins de 2,5 / 1,5 buts, « une équipe ne marque pas ». Ils restent dans le tableau des probabilités.
   const RESULT = ['1', '2', 'H2+', 'A2+', '1O25', '2O25', '1BTTS', '2BTTS', '1CS', '2CS'];
   const GOALS = ['O25', 'O35', 'BTTS', 'H2G', 'A2G'];
-  const playable = x => !x.easy && (x.p >= 0.4 || (x.edge != null && x.edge > 0.06 && x.p > 0.3));
+  // Avec les cotes du jour : on écarte les paris trop mal payés pour leur probabilité réelle
+  const playable = x => !x.easy && (x.edge == null || x.edge > -0.05) && (x.p >= 0.4 || (x.edge != null && x.edge > 0.06 && x.p > 0.3));
   const best = keys => markets.filter(x => keys.includes(x.key) && playable(x)).sort((a, b) => (b.edge || 0) - (a.edge || 0) || b.p - a.p)[0];
   const tips = [best(RESULT), best(GOALS)].filter(Boolean);
   const sc = [...c.scorers.home, ...c.scorers.away].sort((a, b) => b.p1 - a.p1);

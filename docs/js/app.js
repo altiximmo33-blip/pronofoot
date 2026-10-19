@@ -476,7 +476,7 @@ function compactHtml(m) {
       <span class="badge ${v.code}">${esc(v.label)}</span>
     </button>
     ${liveHtml(m, t)}
-    <div class="c-line">${t ? `<span>${esc(t.label)}</span><b>${pct(t.p)}</b>` : `<span class="muted">${v.code === 'skip' ? 'Aucune piste retenue' : 'Pas de piste solide'}</span>`}</div>
+    <div class="c-line">${t ? `<span>${esc(t.label)}${t.odd ? ` <span class="muted">· cote ${t.odd.toFixed(2).replace('.', ',')}</span>${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}` : ''}</span><b>${pct(t.p)}</b>` : `<span class="muted">${v.code === 'skip' ? 'Aucune piste retenue' : 'Pas de piste solide'}</span>`}</div>
     ${infos.length ? `<ul class="c-infos">${infos.map(i => `<li class="${i.k}">${esc(i.t)}</li>`).join('')}</ul>` : ''}
     <div class="c-chips">${chips}<button class="fav-btn${favs.has(m.id) ? ' on' : ''}" data-act="fav" aria-pressed="${favs.has(m.id)}">${favs.has(m.id) ? '★ Favori' : '☆ Favori'}</button></div>
   </article>`;
@@ -696,6 +696,15 @@ function detailHtml(m, a) {
     const hs = m.stats.home, as = m.stats.away;
     brief.push(`${H} marque ${(hs.gf / hs.p).toFixed(1)} et encaisse ${(hs.ga / hs.p).toFixed(1)} but par match à domicile ; ${A} marque ${(as.gf / as.p).toFixed(1)} et encaisse ${(as.ga / as.p).toFixed(1)} à l'extérieur.`);
   }
+  // Les trois sources des buts attendus, et l'avis des bookmakers
+  const src = a.sources || {};
+  const fmtL = s => s ? `${s.lh.toFixed(1).replace('.', ',')}–${s.la.toFixed(1).replace('.', ',')}` : null;
+  const srcParts = [src.goals && `buts réels ${fmtL(src.goals)}`, src.xg && `xG ${fmtL(src.xg)}`, src.market && `note du marché ${fmtL(src.market)}`].filter(Boolean);
+  if (srcParts.length > 1) brief.push(`Buts attendus selon les sources : ${srcParts.join(' · ')}.`);
+  if (a.marketNow && a.modelP) {
+    const d = Math.round((a.modelP.home - a.marketNow.pH) * 100);
+    brief.push(`Bookmakers : ${H} ${pct(a.marketNow.pH)}, nul ${pct(a.marketNow.pD)}, ${A} ${pct(a.marketNow.pA)}. Nos stats seules donnent ${pct(a.modelP.home)} à ${H} (${d > 0 ? '+' : ''}${d} points) : l'estimation finale mélange les deux.`);
+  }
   const lineupLine = official
     ? `<p class="ok-line">✓ Analyse recalculée avec les compositions officielles${lu.source ? ` (${esc(lu.source)}${lu.at ? `, ${time(lu.at)}` : ''})` : ''}.</p>`
     : `<p class="muted small">Compositions officielles pas encore publiées : l'analyse sera recalculée automatiquement dès leur sortie (à partir d'1 h avant).</p>`;
@@ -743,7 +752,7 @@ function detailHtml(m, a) {
     </div>
 
     <div class="box wide analysis"><h4>Ce qu'on peut jouer</h4>
-      ${tips.length ? `<ul class="play-list">${tips.map(t => `<li><div><b>${esc(t.label)}</b><span class="muted small">${esc(tipWhy(t, m, a))}</span></div><b class="p">${pct(t.p)}</b></li>`).join('')}</ul>` : '<p class="muted">Aucune piste non évidente sur ce match.</p>'}
+      ${tips.length ? `<ul class="play-list">${tips.map(t => `<li><div><b>${esc(t.label)}${t.odd ? ` · cote ${t.odd.toFixed(2).replace('.', ',')}` : ''}${t.edge > 0.06 ? ' <span class="tip-ok">(bonne cote)</span>' : ''}</b><span class="muted small">${esc(tipWhy(t, m, a))}</span></div><b class="p">${pct(t.p)}</b></li>`).join('')}</ul>` : '<p class="muted">Aucune piste non évidente sur ce match.</p>'}
       ${v.easy && v.easy.length ? `<p class="small muted">Écartés car trop évidents : ${esc(v.easy.map(x => `${x.label} (${pct(x.p)})`).join(', '))}.</p>` : ''}
       ${scorers.length ? `<p class="small"><b>Buteurs :</b> ${scorers.map(p => `${esc(p.name)} ${pct(p.p1)}${p.p2 >= 0.1 ? ` (doublé ${pct(p.p2)})` : ''}`).join(' · ')}</p>` : ''}
       <p class="small muted">Scores les plus probables : ${a.scores.slice(0, 4).map(s => `${s.h}-${s.a} (${pct(s.p)})`).join(', ')}.</p>

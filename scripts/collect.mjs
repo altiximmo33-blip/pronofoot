@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeMatch } from '../docs/js/model.js';
 import { compByAf } from '../docs/js/config.js';
-import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot } from '../docs/js/core.js';
+import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot, FDCOUK_CODES, fdcoukCompetition, fdcoukForMatch, fdcoukUpcomingOdds } from '../docs/js/core.js';
 
 const AF_KEY = process.env.APIFOOTBALL_KEY;
 const FD_KEY = process.env.FOOTBALLDATA_KEY;
@@ -102,14 +102,36 @@ async function readBilan() {
 
 // Vérifie les pistes de la veille avec les vrais scores, explique les erreurs,
 // et met à jour la mémoire de chaque équipe (buts attendus / buts réels).
+// Rattrape aussi les jours manqués (jusqu'à 3 jours en arrière). Les scores viennent d'ESPN
+// (gratuit, sans quota), ce qui ne dépend plus d'API-Football.
 async function reviewYesterday(today, bilan) {
-  const y = new Date(Date.parse(today + 'T12:00:00Z') - 86400000).toISOString().slice(0, 10);
-  if (bilan.days.some(d => d.date === y)) return;
+  let latest = null;
+  for (let back = 3; back >= 1; back--) {
+    const y = new Date(Date.parse(today + 'T12:00:00Z') - back * 86400000).toISOString().slice(0, 10);
+    try {
+      const r = await reviewDay(y, bilan);
+      if (r && back === 1) latest = r;
+    } catch (e) { console.warn(`Bilan du ${y} impossible :`, e.message); }
+  }
+  bilan.days.sort((a, b) => b.date.localeCompare(a.date));
+  return latest;
+}
+
+async function reviewDay(y, bilan) {
+  if (bilan.days.some(d => d.date === y)) return null;
   let prev;
-  try { prev = JSON.parse(await fs.readFile(path.join(DATA, 'archive', `${y}.json`), 'utf8')); } catch { return; }
-  const fx = await af('fixtures', { date: y, timezone: 'Europe/Paris' });
-  const scores = {};
-  for (const f of fx.response || []) if (FINISHED.includes(f.fixture.status.short)) scores[f.fixture.id] = [f.goals.home, f.goals.away];
+  try { prev = JSON.parse(await fs.readFile(path.join(DATA, 'archive', `${y}.json`), 'utf8')); } catch { return null; }
+  const scores = {}, boards = {}, day8 = y.replace(/-/g, '');
+  for (const m of prev.matches) {
+    const code = ESPN_CODES[m.comp && m.comp.af];
+    if (!code || !m.stats) continue;
+    try {
+      boards[code] = boards[code] || await espn(`${ESPN_SITE}${code}/scoreboard?dates=${day8}`);
+      const s = espnLiveScore(boards[code], m.home.name, m.away.name);
+      if (s && s.state === 'post') scores[m.id] = [s.h, s.a];
+    } catch { /* compétition indisponible */ }
+  }
+  if (!Object.keys(scores).length) return null;
 
   const analyses = {};
   prev.matches.forEach(m => { analyses[m.id] = analyzeMatch(m); });
@@ -121,7 +143,7 @@ async function reviewYesterday(today, bilan) {
     t[kind] = t[kind].slice(-10);
   };
   for (const m of prev.matches) {
-    const sc = scores[m.fixtureId];
+    const sc = scores[m.id];
     if (!sc || !m.stats) continue;
     const [h, a] = sc, an = analyses[m.id];
     const picks = an.tips.filter(t => !String(t.key).startsWith('SC')).map(t => {
@@ -139,7 +161,7 @@ async function reviewYesterday(today, bilan) {
     remember(m.away.id, m.away.name, 'def', an.lh, h);
   }
   bilan.days.unshift(day);
-  bilan.days = bilan.days.slice(0, 60);
+  bilan.days = bilan.days.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 60);
   bilan.updatedAt = new Date().toISOString();
   const all = day.matches.flatMap(x => x.picks), ok = all.filter(p => p.ok).length;
   console.log(`Bilan du ${y} : ${ok}/${all.length} pistes réussies`);
@@ -163,6 +185,44 @@ function applyLearning(matches, bilan) {
     if (Math.abs(defH - 1) >= 0.05) notes.push(`${m.home.name} encaisse ${defH > 1 ? 'plus' : 'moins'} que prévu (${pct(defH)})`);
     if (notes.length) m.tierText.push(`Correction apprise des erreurs passées : ${notes.join(' ; ')}.`);
   }
+}
+
+// ---------- xG, note du marché et cotes du jour (football-data.co.uk, fichiers gratuits) ----------
+async function fetchText(url) {
+  for (let i = 0; i < 3; i++) {
+    try {
+      const r = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 PronoFoot' }, signal: AbortSignal.timeout(60000) });
+      if (r.ok) return await r.text();
+    } catch { /* site lent : nouvel essai */ }
+    await sleep(2000);
+  }
+  throw new Error('Téléchargement impossible : ' + url);
+}
+
+async function enrichFdcouk(matches) {
+  const season = '2627';
+  const comps = {};
+  let fixtures = null;
+  try { fixtures = await fetchText('https://www.football-data.co.uk/fixtures.csv'); } catch (e) { console.warn(e.message); }
+  let withX = 0, withOdds = 0;
+  for (const m of matches) {
+    const code = FDCOUK_CODES[m.comp && m.comp.af];
+    if (!code || !m.stats) continue;
+    if (!(code in comps)) {
+      try { comps[code] = fdcoukCompetition(await fetchText(`https://www.football-data.co.uk/mmz4281/${season}/${code}.csv`)); }
+      catch (e) { console.warn(e.message); comps[code] = null; }
+    }
+    const F = comps[code];
+    if (F) {
+      const fm = fdcoukForMatch(F, m.home.name, m.away.name);
+      if (fm) { if (fm.xg) { m.xg = fm.xg; withX++; } if (fm.market) m.market = fm.market; }
+    }
+    if (fixtures && !m.odds) {
+      const odds = fdcoukUpcomingOdds(fixtures, code, m.home.name, m.away.name);
+      if (odds) { m.odds = odds; withOdds++; }
+    }
+  }
+  console.log(`football-data.co.uk : xG pour ${withX} matchs, cotes pour ${withOdds} matchs`);
 }
 
 // ---------- Forme réelle et fatigue (ESPN, sans quota) ----------
@@ -502,6 +562,7 @@ async function main() {
 
     const matches = await daily(today);
     applyLearning(matches, bilan);
+    try { await enrichFdcouk(matches); } catch (e) { console.warn('xG / marché :', e.message); }
     try { await enrichEspn(matches, bilan, today); } catch (e) { console.warn('Forme / fatigue :', e.message); }
     await fs.writeFile(BILAN_FILE, JSON.stringify(bilan));
     state = { date: today, generatedAt: new Date().toISOString(), afUsed: 0, matches, events: [] };

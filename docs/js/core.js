@@ -194,6 +194,119 @@ export function groupSlots(matches) {
   return slots;
 }
 
+// ---------- football-data.co.uk : xG, tirs et cotes des bookmakers (fichiers CSV gratuits) ----------
+export const FDCOUK_CODES = { 39: 'E0', 40: 'E1', 140: 'SP1', 135: 'I1', 78: 'D1', 79: 'D2', 61: 'F1', 62: 'F2', 88: 'N1', 94: 'P1', 144: 'B1', 203: 'T1', 197: 'G1', 179: 'SC0' };
+
+export function parseCsv(text) {
+  const lines = String(text || '').replace(/^﻿/, '').split(/\r?\n/).filter(l => l.trim());
+  if (!lines.length) return [];
+  const head = lines[0].split(',');
+  return lines.slice(1).map(l => { const v = l.split(','); const o = {}; head.forEach((h, i) => { o[h] = v[i]; }); return o; });
+}
+
+// Noms abrégés du fichier anglais → noms complets (pour retrouver les équipes)
+const FDC_ALIASES = [
+  [/^man city$/, 'manchester city'], [/^man united$/, 'manchester united'], [/^nott'?m forest$/, 'nottingham forest'],
+  [/^ath madrid$/, 'atletico madrid'], [/^ath bilbao$/, 'athletic club bilbao'], [/^sociedad$/, 'real sociedad'], [/^betis$/, 'real betis'],
+  [/^sp lisbon$/, 'sporting cp'], [/^paris sg$/, 'paris saint germain'], [/^ein frankfurt$/, 'eintracht frankfurt'],
+  [/^m'?gladbach$/, 'borussia monchengladbach'], [/^fc koln$/, 'koln'], [/^sheffield weds$/, 'sheffield wednesday'],
+  [/^qpr$/, 'queens park rangers'], [/^west brom$/, 'west bromwich albion'], [/^wolves$/, 'wolverhampton'], [/^leverkusen$/, 'bayer leverkusen'],
+  [/^dortmund$/, 'borussia dortmund'], [/^st etienne$/, 'saint etienne'], [/^st pauli$/, 'sankt pauli'], [/^for sittard$/, 'fortuna sittard'],
+  [/^inter$/, 'inter milan'], [/^milan$/, 'ac milan'], [/^roma$/, 'as roma'], [/^verona$/, 'hellas verona'],
+];
+const fdcName = n => { const s = norm(n); const a = FDC_ALIASES.find(([re]) => re.test(s)); return a ? a[1] : s; };
+
+// Probabilités du marché (moyenne des bookmakers, marge retirée) → buts attendus implicites
+const MKT_GRID = (() => {
+  const g = [];
+  const pmf = (k, l) => { let p = Math.exp(-l); for (let i = 1; i <= k; i++) p *= l / i; return p; };
+  for (let lh = 0.2; lh <= 4.01; lh += 0.1) for (let la = 0.2; la <= 4.01; la += 0.1) {
+    let H = 0, A = 0, O = 0;
+    for (let i = 0; i <= 10; i++) for (let j = 0; j <= 10; j++) { const p = pmf(i, lh) * pmf(j, la); if (i > j) H += p; else if (j > i) A += p; if (i + j > 2) O += p; }
+    g.push([lh, la, H, A, O]);
+  }
+  return g;
+})();
+function oddsToLambdas(r, pre = 'Avg') {
+  const h = +r[pre + 'H'], d = +r[pre + 'D'], a = +r[pre + 'A'];
+  if (!(h > 1 && d > 1 && a > 1)) return null;
+  const s = 1 / h + 1 / d + 1 / a, pH = (1 / h) / s, pA = (1 / a) / s;
+  const o = +r[pre + '>2.5'], u = +r[pre + '<2.5'];
+  const pO = o > 1 && u > 1 ? (1 / o) / (1 / o + 1 / u) : null;
+  let best = null, err = 9;
+  for (const [lh, la, H, A, O] of MKT_GRID) {
+    const e = (H - pH) ** 2 + (A - pA) ** 2 + (pO == null ? 0 : (O - pO) ** 2);
+    if (e < err) { err = e; best = [lh, la]; }
+  }
+  return best;
+}
+
+const fdcDate = s => { const [d, m, y] = String(s || '').split('/'); return Date.parse(`${y.length === 2 ? '20' + y : y}-${m}-${d}T12:00:00Z`); };
+
+// Saison d'un championnat : par équipe, buts, xG et « buts attendus selon le marché », à domicile et à l'extérieur
+export function fdcoukCompetition(csvText, beforeTime = Infinity) {
+  const rows = parseCsv(csvText).filter(r => r.HomeTeam && r.FTHG !== '' && r.FTHG != null && fdcDate(r.Date) < beforeTime);
+  const teams = new Map();
+  const zero = () => ({ p: 0, gf: 0, ga: 0, xp: 0, xgf: 0, xga: 0, mp: 0, mgf: 0, mga: 0 });
+  const get = n => { if (!teams.has(n)) teams.set(n, { name: fdcName(n), shortName: n, home: zero(), away: zero() }); return teams.get(n); };
+  const sum = { gH: 0, gA: 0, xH: 0, xA: 0, xp: 0, mH: 0, mA: 0, mp: 0, n: 0 };
+  for (const r of rows) {
+    const h = get(r.HomeTeam), a = get(r.AwayTeam), hg = +r.FTHG, ag = +r.FTAG;
+    h.home.p++; h.home.gf += hg; h.home.ga += ag; a.away.p++; a.away.gf += ag; a.away.ga += hg;
+    sum.gH += hg; sum.gA += ag; sum.n++;
+    if (r.HxG !== '' && r.HxG != null && !isNaN(+r.HxG)) {
+      const hx = +r.HxG, ax = +r.AxG;
+      h.home.xp++; h.home.xgf += hx; h.home.xga += ax; a.away.xp++; a.away.xgf += ax; a.away.xga += hx;
+      sum.xH += hx; sum.xA += ax; sum.xp++;
+    }
+    const lam = oddsToLambdas(r) || oddsToLambdas(r, 'B365');
+    if (lam) {
+      h.home.mp++; h.home.mgf += lam[0]; h.home.mga += lam[1]; a.away.mp++; a.away.mgf += lam[1]; a.away.mga += lam[0];
+      sum.mH += lam[0]; sum.mA += lam[1]; sum.mp++;
+    }
+  }
+  const list = [...teams.values()];
+  return {
+    list, n: sum.n,
+    avg: { gH: sum.gH / Math.max(1, sum.n), gA: sum.gA / Math.max(1, sum.n), xH: sum.xp ? sum.xH / sum.xp : null, xA: sum.xp ? sum.xA / sum.xp : null, mH: sum.mp ? sum.mH / sum.mp : null, mA: sum.mp ? sum.mA / sum.mp : null },
+  };
+}
+
+// Données xG et marché d'un match, au même format que m.stats / m.teamStats (pour le calcul)
+export function fdcoukForMatch(F, homeName, awayName) {
+  const th = findTeam(homeName, F.list), ta = findTeam(awayName, F.list);
+  if (!th || !ta || th === ta) return null;
+  const pack = (kind, avgH, avgA) => {
+    if (avgH == null) return null;
+    const v = (t, side) => kind === 'x' ? { p: t[side].xp, gf: t[side].xgf, ga: t[side].xga } : { p: t[side].mp, gf: t[side].mgf, ga: t[side].mga };
+    if (!v(th, 'home').p || !v(ta, 'away').p) return null;
+    return {
+      avgHome: avgH, avgAway: avgA, home: v(th, 'home'), away: v(ta, 'away'),
+      teamStats: { home: { home: v(th, 'home'), away: v(th, 'away') }, away: { home: v(ta, 'home'), away: v(ta, 'away') } },
+    };
+  };
+  return { xg: pack('x', F.avg.xH, F.avg.xA), market: pack('m', F.avg.mH, F.avg.mA), names: [th.shortName, ta.shortName] };
+}
+
+// Cotes des matchs à venir (fichier fixtures.csv) : moyenne des bookmakers
+export function fdcoukUpcomingOdds(csvText, div, homeName, awayName) {
+  const rows = parseCsv(csvText).filter(r => r.Div === div);
+  const list = rows.map(r => ({ name: fdcName(r.HomeTeam), shortName: r.HomeTeam, r }));
+  for (const x of list) {
+    if (!findTeam(homeName, [x])) continue;
+    const r = x.r;
+    if (!findTeam(awayName, [{ name: fdcName(r.AwayTeam), shortName: r.AwayTeam }])) continue;
+    const num = k => (+r[k] > 1 ? +r[k] : null);
+    const pre = num('AvgH') ? 'Avg' : 'B365';
+    return {
+      bookmaker: 'Moyenne des bookmakers',
+      h2h: { home: num(pre + 'H'), draw: num(pre + 'D'), away: num(pre + 'A') },
+      totals: num(pre + '>2.5') ? { '2.5': { over: num(pre + '>2.5'), under: num(pre + '<2.5') } } : {},
+    };
+  }
+  return null;
+}
+
 // ---------- ESPN : deuxième source (compositions + résultats de la saison) ----------
 // Codes ESPN des compétitions suivies (identifiant API-Football → code ESPN)
 export const ESPN_CODES = {
