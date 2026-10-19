@@ -40,7 +40,8 @@ document.addEventListener('click', e => {
 
 // --- Filtres ------------------------------------------------------------------
 ['#f-search', '#f-comp', '#f-verdict', '#f-sort', '#f-hidden'].forEach(s => $(s).addEventListener('input', renderMatches));
-$('#btn-refresh').addEventListener('click', () => loadAll());
+// Actualiser : recharge aussi les fichiers de l'application (remplace le vidage du cache)
+$('#btn-refresh').addEventListener('click', () => window.pfUpdate ? window.pfUpdate(true) : loadAll());
 $('#btn-clear-alerts').addEventListener('click', clearAlerts);
 $('#btn-notify').addEventListener('click', async () => {
   if (!('Notification' in window)) return alert('Votre navigateur ne gère pas les notifications.');
