@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeMatch } from '../docs/js/model.js';
 import { compByAf } from '../docs/js/config.js';
-import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs } from '../docs/js/core.js';
+import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot } from '../docs/js/core.js';
 
 const AF_KEY = process.env.APIFOOTBALL_KEY;
 const FD_KEY = process.env.FOOTBALLDATA_KEY;
@@ -162,6 +162,89 @@ function applyLearning(matches, bilan) {
   }
 }
 
+// ---------- Forme réelle et fatigue (ESPN, sans quota) ----------
+// Pour chaque équipe du jour : statistiques de ses derniers matchs (tirs cadrés, possession),
+// jours de repos, et match de coupe d'Europe en semaine.
+const UEFA = { 'uefa.champions': 'Ligue des champions', 'uefa.europa': 'Ligue Europa', 'uefa.europa.conf': 'Ligue Conférence' };
+const ymd = t => new Date(t).toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' }).replace(/-/g, '');
+
+async function enrichEspn(matches, bilan, today) {
+  // Matchs européens des 5 derniers jours
+  const euro = [];
+  for (let d = 1; d <= 5; d++) {
+    const day = ymd(Date.parse(today + 'T12:00:00Z') - d * 86400000);
+    for (const [code, label] of Object.entries(UEFA)) {
+      try {
+        const sb = await espn(`${ESPN_SITE}${code}/scoreboard?dates=${day}`);
+        for (const ev of sb.events || []) {
+          const c = ev.competitions[0];
+          c.competitors.forEach(x => euro.push({ teamId: String(x.team.id), date: Date.parse(ev.date), comp: label, away: x.homeAway === 'away', opp: (c.competitors.find(y => y !== x) || {}).team?.displayName || '' }));
+        }
+      } catch { /* jour sans match */ }
+    }
+  }
+  const boards = {}, schedules = {};
+  const dayName = t => new Date(t).toLocaleDateString('fr-FR', { weekday: 'long', timeZone: 'Europe/Paris' });
+  for (const m of matches) {
+    const code = ESPN_CODES[m.comp && m.comp.af];
+    if (!m.stats || !code) continue;
+    let ids;
+    try {
+      const day = ymd(m.kickoff);
+      boards[code + day] = boards[code + day] || await espn(`${ESPN_SITE}${code}/scoreboard?dates=${day}`);
+      ids = espnEventTeams(boards[code + day], m.home.name, m.away.name);
+    } catch (e) { console.warn(e.message); continue; }
+    if (!ids) continue;
+    m.perf = {}; m.fatigue = {}; m.notes = m.notes || [];
+    for (const side of ['home', 'away']) {
+      const espnId = side === 'home' ? ids.homeId : ids.awayId, name = m[side].name;
+      const mem = bilan.teams[m[side].id] = bilan.teams[m[side].id] || { name, att: [], def: [] };
+      mem.perf = mem.perf || [];
+      let lastDate = 0;
+      try {
+        schedules[code + espnId] = schedules[code + espnId] || await espn(`${ESPN_SITE}${code}/teams/${espnId}/schedule`);
+        const done = (schedules[code + espnId].events || [])
+          .filter(ev => ev.competitions && ev.competitions[0].status && ev.competitions[0].status.type.completed)
+          .sort((x, y) => Date.parse(y.date) - Date.parse(x.date));
+        if (done[0]) lastDate = Date.parse(done[0].date);
+        // Statistiques des 5 derniers matchs (déjà lues = gardées en mémoire)
+        for (const ev of done.slice(0, 5)) {
+          if (mem.perf.some(p => p.ev === ev.id)) continue;
+          try {
+            const st = espnTeamMatchStats(await espn(`${ESPN_SITE}${code}/summary?event=${ev.id}`), espnId);
+            if (st) mem.perf.push({ ev: ev.id, date: ev.date, ...st });
+          } catch { /* match sans statistiques */ }
+          await sleep(100);
+        }
+        mem.perf = mem.perf.sort((x, y) => Date.parse(x.date) - Date.parse(y.date)).slice(-10);
+      } catch (e) { console.warn(e.message); }
+
+      // Forme réelle
+      const perf = perfSummary(name, mem.perf);
+      if (perf) {
+        m.perf[side] = { label: perf.label, sotF: perf.sotF, sotA: perf.sotA, poss: perf.poss, n: perf.n };
+        m.notes.push(perf.text);
+        if (m.adj) m.adj[side] *= perf.factor;
+      }
+      // Fatigue : coupe d'Europe en semaine et jours de repos
+      const eu = euro.filter(e => e.teamId === String(espnId) && e.date < m.kickoff).sort((x, y) => y.date - x.date)[0];
+      const last = Math.max(lastDate, eu ? eu.date : 0);
+      const rest = last ? Math.floor((m.kickoff - last) / 86400000) : null;
+      m.fatigue[side] = { rest, euro: eu ? { comp: eu.comp, away: eu.away, opp: eu.opp, date: eu.date } : null };
+      if (eu && rest != null && rest <= 4) {
+        m.notes.push(`Fatigue : ${name} a joué ${dayName(eu.date)} en ${eu.comp}${eu.away ? ` à l'extérieur (déplacement chez ${eu.opp})` : ` contre ${eu.opp}`}, ${rest} jour${rest > 1 ? 's' : ''} de repos.`);
+        if (m.adj) {
+          m.adj[side] *= eu.away ? 0.95 : 0.97;                      // attaque émoussée
+          m.adj[side === 'home' ? 'away' : 'home'] *= eu.away ? 1.04 : 1.02; // défense plus perméable
+        }
+      } else if (rest != null && rest <= 2) {
+        m.notes.push(`Fatigue : ${name} n'a eu que ${rest} jour${rest > 1 ? 's' : ''} de repos.`);
+        if (m.adj) m.adj[side] *= 0.97;
+      }
+    }
+  }
+}
+
 // ---------- Collecte du matin ----------
 async function daily(today) {
   const fx = await af('fixtures', { date: today, timezone: 'Europe/Paris' });
@@ -222,6 +305,9 @@ function dailySummary(matches) {
       ? `Top du jour (${top.length}) : ` + top.slice(0, 6).map(x => `${hhmm(x.m.kickoff)} ${x.m.home.name}-${x.m.away.name} : ${x.tip.label} ${pct(x.tip.p)}`).join(' | ')
       : 'Top du jour : aucune piste assez fiable pour l\'instant (à revoir avec les compositions).',
   ];
+  // Meilleur créneau : le plus de matchs analysés à la même heure (à jouer 15 min avant)
+  const slot = bestSlot(withStats.map(m => ({ ...m, status: 'NS' })), analyses);
+  if (slot) lines.push(`Meilleur créneau : ${hhmm(slot.start)} (${slot.count} matchs), à jouer vers ${hhmm(slot.betAt)} avec les compos officielles.`);
   // Combiné du jour (5 sélections solides, sans attendre les compositions)
   const legs = comboLegs(withStats, analyses).slice(0, 5);
   if (legs.length >= 3) {
@@ -375,6 +461,8 @@ async function main() {
 
     const matches = await daily(today);
     applyLearning(matches, bilan);
+    try { await enrichEspn(matches, bilan, today); } catch (e) { console.warn('Forme / fatigue :', e.message); }
+    await fs.writeFile(BILAN_FILE, JSON.stringify(bilan));
     state = { date: today, generatedAt: new Date().toISOString(), afUsed: 0, matches, events: [] };
     let summary = dailySummary(matches);
     if (review && review.total) summary = `Bilan d'hier : ${review.ok}/${review.total} pistes réussies.\n` + summary;

@@ -228,6 +228,15 @@ export function espnCompetition(standingsJson, schedulesJson) {
   return buildCompetition({ standings: [{ type: 'TOTAL', table }], season: { currentMatchday: matchday } }, { matches }, null);
 }
 
+// Identifiants ESPN du match et des deux équipes
+export function espnEventTeams(scoreboardJson, homeName, awayName) {
+  const id = espnFindEvent(scoreboardJson, homeName, awayName);
+  if (!id) return null;
+  const c = (scoreboardJson.events || []).find(e => e.id === id).competitions[0];
+  const h = c.competitors.find(x => x.homeAway === 'home'), a = c.competitors.find(x => x.homeAway === 'away');
+  return { id, homeId: h.team.id, awayId: a.team.id };
+}
+
 // Score en direct d'un match dans le programme ESPN : { h, a, state: 'pre' | 'in' | 'post', clock, detail }
 export function espnLiveScore(scoreboardJson, homeName, awayName) {
   const id = espnFindEvent(scoreboardJson, homeName, awayName);
@@ -276,6 +285,35 @@ export function applyEspnLineups(m, summaryJson) {
   const lh = h && conv(h), la = a && conv(a);
   if (lh && la) { m.lineups = { home: lh, away: la }; return true; }
   return false;
+}
+
+// ---------- Forme réelle : tirs cadrés et possession des derniers matchs (ESPN) ----------
+// Statistiques d'un match joué, vues du côté d'une équipe (identifiant ESPN)
+export function espnTeamMatchStats(summaryJson, espnTeamId) {
+  const teams = (summaryJson.boxscore && summaryJson.boxscore.teams) || [];
+  const comps = (summaryJson.header && summaryJson.header.competitions && summaryJson.header.competitions[0] && summaryJson.header.competitions[0].competitors) || [];
+  const me = teams.find(t => String(t.team.id) === String(espnTeamId)), opp = teams.find(t => String(t.team.id) !== String(espnTeamId));
+  const cMe = comps.find(c => String(c.team.id) === String(espnTeamId)), cOpp = comps.find(c => String(c.team.id) !== String(espnTeamId));
+  if (!me || !opp || !cMe || !cOpp) return null;
+  const v = (t, n) => { const s = (t.statistics || []).find(x => x.name === n); return s ? parseFloat(s.displayValue) || 0 : 0; };
+  return { sotF: v(me, 'shotsOnTarget'), sotA: v(opp, 'shotsOnTarget'), poss: v(me, 'possessionPct'), gf: +cMe.score || 0, ga: +cOpp.score || 0, venue: cMe.homeAway };
+}
+
+// Résumé des derniers matchs : en pleine bourre, en galère, malchanceuse (domine sans être récompensée)…
+export function perfSummary(name, list) {
+  const l = (list || []).slice(-6);
+  if (l.length < 3) return null;
+  const s = l.reduce((a, x) => ({ sotF: a.sotF + x.sotF, sotA: a.sotA + x.sotA, gf: a.gf + x.gf, ga: a.ga + x.ga, poss: a.poss + x.poss }), { sotF: 0, sotA: 0, gf: 0, ga: 0, poss: 0 });
+  const sotShare = s.sotF / Math.max(1, s.sotF + s.sotA), goalShare = (s.gf + s.ga) ? s.gf / (s.gf + s.ga) : 0.5;
+  const n = l.length, per = x => (x / n).toFixed(1).replace('.', ',');
+  const base = `${per(s.sotF)} tirs cadrés par match pour, ${per(s.sotA)} contre, ${Math.round(s.poss / n)} % de possession sur ses ${n} derniers matchs`;
+  let label = '', text = '', factor = 1;
+  if (sotShare - goalShare >= 0.15) { label = 'malchanceuse'; factor = 1.05; text = `${name} domine sans être récompensée (${base}) : ses résultats devraient s'améliorer.`; }
+  else if (goalShare - sotShare >= 0.15) { label = 'chanceuse'; factor = 0.95; text = `${name} gagne au-dessus de son jeu (${base}) : attention au retour sur terre.`; }
+  else if (sotShare >= 0.6 && goalShare >= 0.58) { label = 'en pleine bourre'; factor = 1.04; text = `${name} est en pleine bourre (${base}).`; }
+  else if (sotShare <= 0.4 && goalShare <= 0.42) { label = 'en galère'; factor = 0.96; text = `${name} est en galère (${base}).`; }
+  else text = `${name} : ${base}, performances conformes à ses résultats.`;
+  return { n, sotF: s.sotF / n, sotA: s.sotA / n, poss: s.poss / n, label, text, factor };
 }
 
 // ---------- Vérification d'une piste une fois le score connu ----------
@@ -367,6 +405,25 @@ export function comboLegs(matches, analyses) {
     legs.push({ m, tip, score, reasons });
   }
   return legs.sort((x, y) => y.score - x.score);
+}
+
+// ---------- Meilleur créneau du jour ----------
+// Le créneau horaire (matchs à moins de 30 min d'écart) qui regroupe le plus de matchs analysés
+// avec une piste solide : on y parie 15 min avant, quand la plupart des compositions sont sorties.
+export function bestSlot(matches, analyses) {
+  const candidates = matches.filter(m => m.status === 'NS' && m.stats && analyses[m.id] && analyses[m.id].verdict.code !== 'skip');
+  let best = null;
+  for (const slot of groupSlots(candidates)) {
+    const legs = slot.matches.map(m => {
+      const t = analyses[m.id].tips.filter(x => !String(x.key).startsWith('SC') && !x.easy && x.p >= 0.55).sort((a, b) => b.p - a.p)[0];
+      return t ? { m, tip: t, reasons: [] } : null;
+    }).filter(Boolean).sort((a, b) => b.tip.p - a.tip.p);
+    if (legs.length < 3) continue;
+    const official = slot.matches.filter(m => m.lineups && m.lineups.home && m.lineups.home.status === 'officielle').length;
+    const score = legs.length + legs.slice(0, 5).reduce((s, x) => s + x.tip.p, 0) / 5;
+    if (!best || score > best.score) best = { start: slot.start, betAt: slot.start - 15 * 60000, count: slot.matches.length, official, legs: legs.slice(0, 5), score };
+  }
+  return best;
 }
 
 export const hhmm = t => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Paris' });

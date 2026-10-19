@@ -57,20 +57,33 @@ export function teamSplit(rows, row) {
 }
 
 // Moyenne pondérée vers 1 tant que peu de matchs ont été joués
-// (poids de 5 matchs « moyens » : en début de saison, 2 ou 3 matchs ne suffisent pas)
-const PRIOR = 5;
+// Réglages recalibrés après le bilan du week-end du 16-18 octobre (92 matchs) :
+// - poids de 8 matchs « moyens » (les petits échantillons trompent) ;
+// - bilan du match (domicile / extérieur) combiné à 50 % avec toute la saison de l'équipe ;
+// - avantage du terrain et niveau de buts légèrement relevés (le modèle les sous-estimait).
+const PRIOR = 8, VENUE_WEIGHT = 0.5, HOME_BOOST = 1.08, GOAL_LEVEL = 1.05;
 const shrink = (v, n) => (v * n + 1 * PRIOR) / (n + PRIOR);
 
 // --- 1. Buts attendus de base ------------------------------------------------
 function baseExpectedGoals(m) {
   const s = m.stats;
   if (s && s.home && s.away && s.home.p > 0 && s.away.p > 0) {
-    const attH = shrink(s.home.gf / s.home.p / s.avgHome, s.home.p);
-    const defH = shrink(s.home.ga / s.home.p / s.avgAway, s.home.p);
-    const attA = shrink(s.away.gf / s.away.p / s.avgAway, s.away.p);
-    const defA = shrink(s.away.ga / s.away.p / s.avgHome, s.away.p);
+    let attH = s.home.gf / s.home.p / s.avgHome, defH = s.home.ga / s.home.p / s.avgAway;
+    let attA = s.away.gf / s.away.p / s.avgAway, defA = s.away.ga / s.away.p / s.avgHome;
+    let nH = s.home.p, nA = s.away.p;
+    // Toute la saison (domicile + extérieur) quand elle est connue
+    const ts = m.teamStats;
+    if (ts && ts.home && ts.away && ts.home.away && ts.away.home && ts.home.away.p > 0 && ts.away.home.p > 0) {
+      const L = (s.avgHome + s.avgAway) / 2;
+      const all = (t, k) => (t.home[k] + t.away[k]) / (t.home.p + t.away.p) / L;
+      const w = VENUE_WEIGHT;
+      attH = w * attH + (1 - w) * all(ts.home, 'gf'); defH = w * defH + (1 - w) * all(ts.home, 'ga');
+      attA = w * attA + (1 - w) * all(ts.away, 'gf'); defA = w * defA + (1 - w) * all(ts.away, 'ga');
+      nH = ts.home.home.p + ts.home.away.p; nA = ts.away.home.p + ts.away.away.p;
+    }
+    attH = shrink(attH, nH); defH = shrink(defH, nH); attA = shrink(attA, nA); defA = shrink(defA, nA);
     return {
-      lh: s.avgHome * attH * defA, la: s.avgAway * attA * defH, method: 'stats',
+      lh: s.avgHome * HOME_BOOST * GOAL_LEVEL * attH * defA, la: s.avgAway * GOAL_LEVEL * attA * defH, method: 'stats',
       idx: { attH, defH, attA, defA },
     };
   }
@@ -224,8 +237,10 @@ function buildVerdict(c) {
   const fav = Math.max(o.home, o.away);
   // Pistes : uniquement des paris qui ne sont PAS évidents (probabilité entre 40 et 70 %),
   // une sur le résultat, une sur les buts, une sur un buteur
-  const RESULT = ['1', 'N', '2', '1N', 'N2', 'H2+', 'A2+', '1O25', '2O25', '1BTTS', '2BTTS', '1CS', '2CS'];
-  const GOALS = ['O25', 'U25', 'O35', 'U15', 'BTTS', 'NBTTS', 'H2G', 'A2G'];
+  // Retirés des pistes après le bilan du week-end (trop d'échecs) : match nul, double chance,
+  // moins de 2,5 / 1,5 buts, « une équipe ne marque pas ». Ils restent dans le tableau des probabilités.
+  const RESULT = ['1', '2', 'H2+', 'A2+', '1O25', '2O25', '1BTTS', '2BTTS', '1CS', '2CS'];
+  const GOALS = ['O25', 'O35', 'BTTS', 'H2G', 'A2G'];
   const playable = x => !x.easy && (x.p >= 0.4 || (x.edge != null && x.edge > 0.06 && x.p > 0.3));
   const best = keys => markets.filter(x => keys.includes(x.key) && playable(x)).sort((a, b) => (b.edge || 0) - (a.edge || 0) || b.p - a.p)[0];
   const tips = [best(RESULT), best(GOALS)].filter(Boolean);

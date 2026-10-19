@@ -184,6 +184,18 @@ main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
 .combo-total { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 14px; padding: 8px 10px; background: var(--value-soft); border-radius: 8px; }
 .combo-total b { color: var(--value); font-size: 16px; }
 
+.combo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 10px; }
+.combo-card { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: grid; gap: 8px; align-content: start; min-width: 0; }
+.combo-card.best { border: 2px solid var(--go); background: var(--go-soft); }
+.combo-card-head { display: grid; gap: 1px; }
+.combo-card-head b { font-size: 15px; }
+.combo-mini { list-style: none; margin: 0; padding: 0; display: grid; gap: 5px; }
+.combo-mini li { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; font-size: 13px; }
+.combo-mini .cm-txt { display: grid; min-width: 0; }
+.combo-mini .cm-txt .c-names { font-size: 13px; }
+.combo-mini small { color: var(--muted); font-size: 11.5px; }
+.combo-mini li > b { color: var(--value); }
+
 /* Favoris */
 .favs { background: var(--panel); border: 1px solid var(--line); border-top: 4px solid var(--warn); border-radius: var(--radius); padding: 12px 14px; margin-bottom: 16px; display: grid; gap: 10px; }
 .fav-actions { display: grid; gap: 6px; }
