@@ -325,6 +325,13 @@ function buildVerdict(c) {
   // Pari buteur : à partir de 30 % (cote d'environ 3), titulaire confirmé en priorité
   const scorerTip = sc.find(p => p.status === 'titulaire' && p.p1 >= 0.3 && p.p1 < 0.7) || sc.find(p => p.p1 >= 0.3 && p.p1 < 0.7);
   if (scorerTip) tips.push({ key: 'SC', label: `${scorerTip.name} buteur${scorerTip.status === 'titulaire' ? ' (titulaire)' : ''}`, p: scorerTip.p1, edge: null, team: scorerTip.team });
+  // Buteur double chance : « X ou Y marque » avec les deux meilleurs buteurs présents
+  // (on suppose les deux événements indépendants : légèrement optimiste si les deux jouent ensemble)
+  const duo = sc.filter(p => p.p1 >= 0.25 && p.status !== 'remplacant' && p.status !== 'incertain').slice(0, 2);
+  if (duo.length === 2) {
+    const pd = 1 - (1 - duo[0].p1) * (1 - duo[1].p1);
+    if (pd >= 0.45 && pd < 0.85) tips.push({ key: 'SCD', label: `${duo[0].name} ou ${duo[1].name} buteur`, p: pd, edge: null, duo: duo.map(p => ({ name: p.name, team: p.team, p1: p.p1, goals: p.goals, status: p.status })) });
+  }
   const dbl = sc.find(p => p.p2 >= 0.12);
   if (dbl) tips.push({ key: 'SC2', label: `${dbl.name} doublé (pari osé)`, p: dbl.p2, edge: null });
   // Les paris évidents, cités seulement pour expliquer pourquoi on les écarte
@@ -334,7 +341,7 @@ function buildVerdict(c) {
   // Indice d'intérêt sur 100 : force de la meilleure piste NON évidente,
   // cotes intéressantes et fiabilité des infos (compositions officielles ou non)
   const clamp01 = x => Math.max(0, Math.min(1, x));
-  const mainTips = tips.filter(t => t.key !== 'SC' && t.key !== 'SC2');
+  const mainTips = tips.filter(t => !String(t.key).startsWith('SC'));
   const bestP = Math.max(0, ...mainTips.map(t => t.p));
   const secondP = mainTips.length > 1 ? Math.min(...mainTips.slice(0, 2).map(t => t.p)) : 0;
   let score = clamp01((bestP - 0.45) / 0.2) * 55 + clamp01((secondP - 0.45) / 0.2) * 10;
@@ -379,8 +386,16 @@ function buildVerdict(c) {
     const why = { malchanceuse: 'Elle se crée plus d\'occasions que ses résultats ne le montrent : ses résultats devraient s\'améliorer.', chanceuse: 'Ses résultats sont meilleurs que son jeu : attention au retour sur terre.', 'en pleine bourre': 'Elle domine ses matchs et les gagne.', 'en galère': 'Elle subit ses matchs et les perd.' }[p.label];
     if (lbl) flags.push({ t: lbl, k: p.label === 'chanceuse' || p.label === 'en galère' ? 'warn' : 'value', why: `${why} ${facts}` });
   });
-  if (obvious) flags.push({ t: 'Favori évident', k: 'gap', why: `${favName} gagne dans ${pct(fav)} des cas : la victoire simple est trop mal payée pour être intéressante. Les pistes cherchent un angle à côté (écart, buts).` });
-  return { code, label, score, tips: tips.slice(0, 4), flags, values, obvious, easy };
+  // Raison du verdict, en clair (affichée sur la fiche)
+  const official = ph.official && pa.official;
+  let reason;
+  if (code === 'play') reason = ['piste solide', official && 'compos officielles', values.length && 'cote intéressante'].filter(Boolean).join(' · ');
+  else if (code === 'watch') reason = !official && bestP >= 0.6 ? 'piste solide, en attente des compos officielles'
+    : bestP < 0.6 ? `meilleure piste à ${pct(bestP)} : pas assez nette (60 % minimum)`
+    : few ? 'peu de matchs joués : chiffres encore fragiles' : 'pas assez de marge sur les cotes';
+  else reason = obvious ? 'favori trop évident, rien d\'intéressant à côté' : 'trop serré ou imprévisible';
+  if (obvious) flags.push({ t: 'Favori évident', k: 'gap', why:`${favName} gagne dans ${pct(fav)} des cas : la victoire simple est trop mal payée pour être intéressante. Les pistes cherchent un angle à côté (écart, buts).` });
+  return { code, label, score, reason, tips: tips.slice(0, 5), flags, values, obvious, easy };
 }
 
 // --- 6. Texte d'analyse --------------------------------------------------------

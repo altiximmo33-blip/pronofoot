@@ -40,6 +40,10 @@ export async function loadAll() {
     const d = await r.json();
     const now = Date.now();
     robot = d;
+    // Scores relevés par le robot (utile pour les matchs terminés depuis longtemps)
+    Object.entries(d.live || {}).forEach(([id, s]) => {
+      if (!state.live[id] || (s.state === 'post' && state.live[id].state !== 'post')) state.live[id] = s;
+    });
     state.matches = mergeExtras(d.matches || [], todayExtras()).map(m => ({ ...m, status: liveStatus(m, now) }));
     applyLive();
     state.analyses = {};
@@ -116,18 +120,16 @@ function refresh() {
 
 function buildBanner() {
   const d = robot || {};
-  const day = d.date ? new Date(d.date + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' }) : '';
-  const withStats = state.matches.filter(m => m.stats).length;
-  const fromClaude = state.matches.filter(m => m.source === 'claude').length;
-  state.bannerHtml = `<strong>Analyse automatique du ${day}.</strong> ${state.matches.length} matchs, dont ${withStats} avec statistiques complètes${fromClaude ? ` (${fromClaude} ajouté${fromClaude > 1 ? 's' : ''} depuis Claude)` : ''}. Les compositions officielles sont ajoutées automatiquement environ 1 h avant chaque match. Les pistes écartent les paris évidents.`;
+  // Bandeau affiché uniquement quand il y a un problème
+  state.bannerHtml = '';
   if (d.date && d.date !== parisToday()) {
-    state.bannerHtml += ' <strong>Attention : ces données ne sont pas celles d\'aujourd\'hui.</strong> La collecte du jour démarre vers 7h.';
+    state.bannerHtml = '<strong>Attention : ces données ne sont pas celles d\'aujourd\'hui.</strong> La collecte du jour démarre vers 7h.';
   }
   // Le robot a rencontré un problème récemment
   const st = state.robotStatus;
   if (st && st.ok === false && Date.now() - st.at < 6 * 3600000) {
     const at = new Date(st.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
-    state.bannerHtml += `<br><strong>⚠ Le robot a rencontré un problème à ${at} (${st.phase}).</strong> Il réessaie automatiquement toutes les 30 minutes.`;
+    state.bannerHtml += `${state.bannerHtml ? '<br>' : ''}<strong>⚠ Le robot a rencontré un problème à ${at} (${st.phase}).</strong> Il réessaie automatiquement toutes les 30 minutes.`;
   }
 }
 
@@ -142,9 +144,19 @@ function applyLive() {
   });
 }
 
+// Matchs terminés dont on n'a pas encore le score final : interrogés une seule fois
+const finalTried = new Set();
+
 async function pollLive() {
   const now = Date.now();
-  const due = state.matches.filter(m => m.kickoff - now < 10 * 60000 && now - m.kickoff < 150 * 60000 && ESPN_CODES[m.comp && m.comp.af]);
+  const due = state.matches.filter(m => {
+    if (!ESPN_CODES[m.comp && m.comp.af] || m.kickoff - now >= 10 * 60000) return false;
+    if (now - m.kickoff < 150 * 60000) return true;
+    const s = state.live[m.id];
+    if ((s && s.state === 'post') || finalTried.has(m.id)) return false;
+    finalTried.add(m.id);
+    return true;
+  });
   if (!due.length) return;
   const boards = {};
   for (const m of due) {

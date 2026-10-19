@@ -2,7 +2,7 @@ import { COMPETITIONS } from './config.js';
 import * as E from './engine.js';
 const { state, onChange, start, loadAll, toggleHidden, clearAlerts, saveSettings, testKeys } = E;
 import { load, save } from './store.js';
-import { topPicks, tipResult, comboLegs, bestSlot } from './core.js';
+import { topPicks, tipResult, bestSlot } from './core.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -11,7 +11,7 @@ const odd = o => o ? o.toFixed(2) : '–';
 const expanded = new Set();   // analyse complète ouverte
 const opened = new Set();     // fiche complète ouverte (sinon fiche courte)
 const openSkips = new Set();  // créneaux dont les matchs sans intérêt sont dépliés
-let showPast = false;         // matchs commencés depuis plus de 30 min (repliés par défaut)
+let showPast = false;         // matchs terminés (repliés par défaut)
 
 // Favoris : gardés sur ce téléphone pour la journée (indépendants des actualisations)
 const parisToday = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' });
@@ -53,22 +53,15 @@ $('#btn-notify').addEventListener('click', async () => {
 // --- Rendu général ------------------------------------------------------------
 function render() {
   const s = state.settings;
-  const live = s.mode === 'live' && s.afKey;
-  $('#demo-banner').hidden = !!live && !state.bannerHtml;
-  if (state.bannerHtml) {
-    $('#demo-banner').innerHTML = state.bannerHtml;
-  }
+  $('#demo-banner').hidden = !state.bannerHtml;
+  $('#demo-banner').innerHTML = state.bannerHtml || '';
   $('#error').hidden = !state.error;
   $('#error').textContent = state.error ? 'Erreur de chargement : ' + state.error : '';
-  const next = state.kind === 'auto' ? 'compos cherchées toutes les 5 min, d\'1 h avant jusqu\'au coup d\'envoi' : nextCheck();
-  $('#status').innerHTML = [
-    state.kind === 'auto' ? '<span class="pill live">● Robot automatique</span>' : live ? '<span class="pill live">● Données réelles</span>' : state.kind === 'today' ? '<span class="pill live">● Matchs réels du jour</span>' : '<span class="pill demo">● Mode démo</span>',
-    state.loading ? '<span>Chargement…</span>' : state.lastUpdate ? `<span>Dernière nouveauté à ${new Date(state.lastUpdate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>` : '',
-    state.lastRun ? `<span>${state.lastRun.ok ? '✓' : '⚠'} Robot vérifié à ${new Date(state.lastRun.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>` : '',
-    next ? `<span>Prochaine vérification : ${esc(next)}</span>` : '',
-    state.quota.af != null ? `<span>API-Football : ${state.quota.af} requêtes restantes</span>` : '',
-    state.quota.odds != null ? `<span>Cotes : ${state.quota.odds} crédits</span>` : '',
-  ].join('');
+  // En-tête réduit au strict nécessaire : l'heure de la dernière vérification du robot
+  const hm = t => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  const checked = state.lastRun ? state.lastRun.at : state.lastUpdate;
+  $('#status').innerHTML = state.loading ? '<span>Chargement…</span>'
+    : checked ? `<span>${state.lastRun && !state.lastRun.ok ? '⚠' : '✓'} À jour · ${hm(checked)}</span>` : '';
   $('#btn-notify').textContent = s.notify && window.Notification && Notification.permission === 'granted' ? '🔔 Notifications activées' : '🔕 Activer les notifications';
 
   const unread = state.alerts.filter(a => a.t > seenAlerts).length;
@@ -79,22 +72,6 @@ function render() {
   renderMatches();
   renderAlerts();
   renderResults();
-}
-
-function nextCheck() {
-  const now = Date.now();
-  let best = null;
-  state.matches.filter(m => m.status === 'NS').forEach(m => {
-    const ph = state.phase[m.id] || {};
-    const off = m.lineups && m.lineups.home && m.lineups.home.status === 'officielle';
-    const cands = [];
-    if (!ph.trend) cands.push([m.kickoff - 60 * 60000, 'tendances']);
-    if (!off) cands.push([Math.max(m.kickoff - 40 * 60000, (ph.lineupTry || 0) + 5 * 60000), 'compositions']);
-    cands.forEach(([t, what]) => { if (!best || t < best[0]) best = [Math.max(t, now), what, m]; });
-  });
-  if (!best) return '';
-  const mins = Math.round((best[0] - now) / 60000);
-  return `${best[1]} ${best[2].home.name}–${best[2].away.name} ${mins <= 1 ? 'dans 1 min' : `dans ${fmtDelay(mins)}`}`;
 }
 
 function fmtDelay(mins) {
@@ -138,12 +115,7 @@ function renderMatches() {
   const n = c => visible.filter(m => state.analyses[m.id] && state.analyses[m.id].verdict.code === c).length;
   const lineupsDone = visible.filter(m => m.lineups && m.lineups.home && m.lineups.home.status === 'officielle').length;
   $('#c-matches').textContent = visible.length || '';
-  $('#summary').innerHTML = `
-    <div class="stat"><b>${visible.length}</b><span>matchs suivis</span></div>
-    <div class="stat"><b style="color:var(--go)">${n('play')}</b><span>intéressants</span></div>
-    <div class="stat"><b style="color:var(--warn)">${n('watch')}</b><span>à surveiller</span></div>
-    <div class="stat"><b style="color:var(--skip)">${n('skip')}</b><span>sans intérêt (évidents ou imprévisibles)</span></div>
-    <div class="stat"><b>${lineupsDone}</b><span>compos officielles</span></div>`;
+  $('#summary').innerHTML = `<p class="sum-line"><b>${visible.length}</b> matchs · <b class="go">${n('play')}</b> intéressant${n('play') > 1 ? 's' : ''} · <b class="warn">${n('watch')}</b> à surveiller · ${lineupsDone} compo${lineupsDone > 1 ? 's' : ''} officielle${lineupsDone > 1 ? 's' : ''}</p>`;
 
   if (!list.length) {
     $('#match-list').innerHTML = `<div class="empty-state">${state.loading ? 'Chargement des matchs…' : 'Aucun match ne correspond.'}</div>`;
@@ -151,11 +123,14 @@ function renderMatches() {
   }
   const visibleAll = all.filter(m => !state.hidden.has(m.id));
   const top = (!q && !comp && !verdict) ? favHtml() + topHtml(visibleAll) + combosHtml(visibleAll) : '';
-  // Les matchs commencés depuis au moins 30 minutes passent dans une section repliée, en bas
-  const cutoff = Date.now() - 30 * 60000;
-  const upcoming = list.filter(m => m.kickoff > cutoff), past = list.filter(m => m.kickoff <= cutoff);
-  const pastHtml = past.length ? `<button class="link muted skip-toggle past-toggle" data-act="past">${showPast ? '▲ Replier' : '▼ Voir'} ${past.length > 1 ? `les ${past.length} matchs commencés ou terminés` : 'le match commencé ou terminé'}</button>
-    ${showPast ? `<div class="match-list">${past.sort((a, b) => b.kickoff - a.kickoff).map(cardHtml).join('')}</div>` : ''}` : '';
+  // Un match en cours reste à sa place (avec le score en direct) ; terminé, il passe dans la section du bas
+  const upcoming = list.filter(m => !isFinished(m)), past = list.filter(isFinished);
+  const final = m => { const s = state.live[m.id]; return s && s.state === 'post' ? s : null; };
+  const won = past.filter(m => { const t = bestTip(m), s = final(m); return t && s && tipResult(t.key, s.h, s.a); }).length;
+  const played = past.filter(m => bestTip(m) && final(m)).length;
+  const pastHtml = past.length ? `<section class="past">
+    <button class="past-head" data-act="past"><span>✅ Matchs terminés (${past.length})${played ? ` · pistes gagnées ${won}/${played}` : ''}</span><span>${showPast ? '▲' : '▼'}</span></button>
+    ${showPast ? `<div class="match-list">${past.sort((a, b) => a.kickoff - b.kickoff).map(cardHtml).join('')}</div>` : ''}</section>` : '';
   const body = !upcoming.length ? '<div class="empty-state">Plus aucun match à venir aujourd\'hui.</div>'
     : sort !== 'slot' ? upcoming.map(cardHtml).join('') : groupSlots(upcoming).map(slotHtml).join('');
   $('#match-list').innerHTML = top + body + pastHtml;
@@ -172,6 +147,8 @@ $('#match-list').addEventListener('click', e => {
   if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
+const isFinished = m => ['FT', 'AET', 'PEN'].includes(m.status);
+
 // --- Regroupement par créneau horaire, classement et combinés ---------------------
 function groupSlots(matches) {
   const slots = [];
@@ -187,85 +164,112 @@ function groupSlots(matches) {
 function bestTip(m) {
   const a = state.analyses[m.id];
   if (!a || a.verdict.code === 'skip') return null;
-  return a.tips.filter(t => t.key !== 'SC2').sort((x, y) => y.p - x.p)[0] || null;
+  return a.tips.filter(t => t.key !== 'SC2' && t.key !== 'SCD').sort((x, y) => y.p - x.p)[0] || null;
+}
+
+// --- Tireurs de penalty (mémoire du robot), confrontés aux compos officielles ------------
+const lastName = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim().split(/\s+/).pop();
+function penInfo(m, side) {
+  const list = m.pens && m.pens[side];
+  if (!list || !list.length) return null;
+  const lu = m.lineups && m.lineups[side];
+  const xi = lu && lu.status === 'officielle' && lu.startXI ? lu.startXI : null;
+  const inXI = n => xi && xi.some(x => lastName(x.name) === lastName(n));
+  const main = list[0], rec = p => `${p.ok}/${p.att}`;
+  if (!xi) return { k: '', main, t: `🎯 Penalty ${m[side].name} : ${main.name} (${rec(main)} cette saison)` };
+  if (inXI(main.name)) return { k: 'ok', main, t: `🎯 Penalty ${m[side].name} : ${main.name} titulaire ✓ (${rec(main)})` };
+  const next = list.find(p => inXI(p.name));
+  return { k: 'bad', main: next || null, t: `🎯 Penalty ${m[side].name} : ${main.name} pas titulaire${next ? ` → ${next.name} (${rec(next)}) devrait tirer` : ', tireur inconnu'}` };
 }
 
 function slotHtml(slot) {
   const time = new Date(slot.start).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
-  const ranked = slot.matches.map(m => ({ m, t: bestTip(m) }))
-    .sort((x, y) => (y.t ? y.t.p : -1) - (x.t ? x.t.p : -1));
-  const picks = ranked.filter(x => x.t);
+  // Dans un créneau, les matchs restent dans l'ordre des horaires ; la couleur montre les intéressants
+  const ranked = [...slot.matches].sort((a, b) => a.kickoff - b.kickoff).map(m => ({ m, t: bestTip(m) }));
   const main = ranked.filter(x => state.analyses[x.m.id].verdict.code !== 'skip');
   const skipped = ranked.filter(x => state.analyses[x.m.id].verdict.code === 'skip');
   const showSkips = openSkips.has(String(slot.start));
-  const combo = k => {
-    const sel = picks.slice(0, k);
-    if (sel.length < k) return '';
-    const p = sel.reduce((acc, x) => acc * x.t.p, 1);
-    return `<li><b>${k === 2 ? 'Prudent' : 'Ambitieux'} (${pct(p)})</b> : ${sel.map(x => `${esc(x.m.home.name)}–${esc(x.m.away.name)} → ${esc(x.t.label)}`).join(' + ')}</li>`;
-  };
+  const nPlay = slot.matches.filter(m => state.analyses[m.id].verdict.code === 'play').length;
   const official = slot.matches.filter(m => m.lineups && m.lineups.home && m.lineups.home.status === 'officielle').length;
   return `<section class="slot">
     <div class="slot-head">
-      <h2>Créneau ${time}</h2>
-      <span class="muted small">${slot.matches.length} match${slot.matches.length > 1 ? 's' : ''} · compos officielles ${official}/${slot.matches.length}</span>
+      <h2>${time}</h2>
+      <span class="muted small">${slot.matches.length} match${slot.matches.length > 1 ? 's' : ''}${nPlay ? ` · <b class="go">${nPlay} à jouer</b>` : ''} · compos ${official}/${slot.matches.length}</span>
     </div>
-    ${picks.length >= 2 ? `<div class="slot-summary"><div><div class="tips-title">Combinés du créneau (probabilité = produit des pistes)</div><ul class="slot-combos">${combo(2)}${combo(3)}</ul></div></div>` : ''}
-    ${!picks.length ? '<p class="small muted">Aucune piste non évidente dans ce créneau.</p>' : ''}
+    ${!main.length ? '<p class="small muted">Aucune piste non évidente dans ce créneau.</p>' : ''}
     <div class="match-list">${main.map(x => cardHtml(x.m)).join('')}</div>
     ${skipped.length ? `<button class="link muted skip-toggle" data-act="skips" data-slot="${slot.start}">${showSkips ? '▲ Replier' : '▼ Voir'} les ${skipped.length} match${skipped.length > 1 ? 's' : ''} sans intérêt (évidents, imprévisibles ou sans statistiques)</button>
       ${showSkips ? `<div class="match-list">${skipped.map(x => cardHtml(x.m)).join('')}</div>` : ''}` : ''}
   </section>`;
 }
 
-// Combinés du jour : plusieurs propositions visibles d'un coup (construites sans attendre les compositions)
+// Combinés du jour : trois cartes, chacune avec sa propre règle (pas de doublon avec le top du jour).
+// Toutes les sélections sont rangées par horaire, pour les retrouver facilement chez le bookmaker.
+const TIER_RANK = { gros: 3, moyen: 2, faible: 1 };
+const byTime = (x, y) => x.m.kickoff - y.m.kickoff;
+const hhmmFr = t => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+
+// Spécial domicile : favori à domicile solide chez lui, adversaire pas plus fort, pas d'absent clé ni de fatigue
+function homeLegs(list) {
+  const out = [];
+  for (const m of list) {
+    const a = state.analyses[m.id];
+    if (!a || m.status !== 'NS' || !m.stats || Math.min(m.stats.home.p, m.stats.away.p) < 4) continue;
+    const p = a.p.home;
+    if (p < 0.55 || p > 0.9) continue;
+    const tH = m.tiers && TIER_RANK[m.tiers.home], tA = m.tiers && TIER_RANK[m.tiers.away];
+    if (tH && tA && tH < tA) continue;
+    if (a.presence.home.players.some(x => x.status === 'absent' && x.share >= 0.15)) continue;
+    const f = m.fatigue && m.fatigue.home;
+    if (f && f.euro && f.rest != null && f.rest <= 3) continue;
+    const ts = m.teamStats || {}, hh = ts.home && ts.home.home, aa = ts.away && ts.away.away;
+    const reasons = [];
+    if (hh && hh.p && hh.w != null) reasons.push(`${hh.w} victoire${hh.w > 1 ? 's' : ''} sur ${hh.p} à domicile`);
+    if (aa && aa.p && aa.w != null) reasons.push(`${m.away.name} : ${aa.w} sur ${aa.p} à l'extérieur`);
+    const o = m.odds && m.odds.h2h && m.odds.h2h.home;
+    out.push({ m, tip: { label: `Victoire ${m.home.name}`, p, odd: o }, reasons });
+  }
+  return out.sort((x, y) => y.tip.p - x.tip.p).slice(0, 5).sort(byTime);
+}
+
 function combosHtml(list) {
-  const legs = comboLegs(list, state.analyses);
-  const used = m => m.status === 'NS' && m.stats && Math.min(m.stats.home.p, m.stats.away.p) >= 4;
-  // Spécial domicile : victoires à domicile de favoris, cote encore intéressante (environ 1,40 à 2,00)
-  const home = list.filter(m => used(m) && state.analyses[m.id])
-    .map(m => ({ m, tip: { label: `Victoire ${m.home.name}`, p: state.analyses[m.id].p.home }, reasons: [] }))
-    .filter(x => x.tip.p >= 0.5 && x.tip.p <= 0.72).sort((x, y) => y.tip.p - x.tip.p);
-  // Tendances (risqué) : pistes à 50-60 % sur des matchs à surveiller, avant les compositions
-  const trend = list.filter(m => used(m) && state.analyses[m.id] && state.analyses[m.id].verdict.code === 'watch')
-    .map(m => { const t = state.analyses[m.id].tips.filter(x => !String(x.key).startsWith('SC') && x.p >= 0.5 && x.p < 0.6).sort((a, b) => b.p - a.p)[0]; return t ? { m, tip: t, reasons: [] } : null; })
-    .filter(Boolean).sort((x, y) => y.tip.p - x.tip.p);
-  // Buteurs du jour : joueurs les plus susceptibles de marquer (titulaires confirmés signalés)
+  const slot = bestSlot(list, state.analyses);
+  const home = homeLegs(list);
   const scorers = list.filter(m => m.status === 'NS' && m.stats && state.analyses[m.id])
     .flatMap(m => { const a = state.analyses[m.id]; return [...a.scorers.home, ...a.scorers.away].map(p => ({ m, p })); })
     .filter(x => x.p.p1 >= 0.3).sort((x, y) => y.p.p1 - x.p.p1).slice(0, 6)
-    .map(({ m, p }) => ({ m, tip: { label: `${p.name} (${p.team})${p.status === 'titulaire' ? ' · titulaire ✓' : ''} · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} matchs` : ''}`, p: p.p1 }, reasons: [] }));
+    .map(({ m, p }) => {
+      const pen = ['home', 'away'].map(s => penInfo(m, s)).some(x => x && x.main && lastName(x.main.name) === lastName(p.name));
+      return { m, tip: { label: `${p.name} buteur (${p.team})`, p: p.p1 }, reasons: [`${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} matchs` : ''}${p.status === 'titulaire' ? ' · titulaire ✓' : ''}${pen ? ' · 🎯 tire les penalties' : ''}`] };
+    });
+  // Buteur double chance : « X ou Y marque » (les deux meilleurs buteurs présents du match)
+  const duos = list.filter(m => m.status === 'NS' && state.analyses[m.id])
+    .map(m => { const t = state.analyses[m.id].tips.find(x => x.key === 'SCD'); return t ? { m, tip: { label: `🎲 ${t.label}`, p: t.p }, reasons: ['buteur double chance'] } : null; })
+    .filter(Boolean).sort((x, y) => y.tip.p - x.tip.p).slice(0, 4);
+  scorers.push(...duos);
+  scorers.sort(byTime);
 
-  // Meilleur créneau : le plus de matchs analysés à la même heure, à jouer 15 min avant (compos connues)
-  const slot = bestSlot(list, state.analyses);
-  const hh = t => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  // Les trois cartes restent toujours visibles, avec un message quand il n'y a rien de solide
   const cards = [
-    ...(slot ? [{ id: 'slot', title: `⏰ Meilleur créneau : ${hh(slot.start)}`, sub: `${slot.count} matchs · compos officielles ${slot.official}/${slot.count} · à jouer vers ${hh(slot.betAt)}`, sel: slot.legs, best: true }] : []),
-    { id: 'sur', title: '🛡️ Sûr', sub: '3 pistes les plus solides', sel: legs.filter(x => x.tip.p >= 0.6).slice(0, 3) },
-    { id: 'equi', title: '⚖️ Équilibré', sub: '5 pistes solides', sel: legs.slice(0, 5) },
-    { id: 'dom', title: '🏠 Spécial domicile', sub: 'victoires à domicile de favoris', sel: home.slice(0, 5) },
-    { id: 'trend', title: '🎲 Tendances (risqué)', sub: 'sans les compos, à 50-60 %', sel: trend.slice(0, 5) },
-    { id: 'gros', title: '💰 Gros coup', sub: '10 pistes solides', sel: legs.slice(0, 10) },
-    { id: 'but', title: '⚽ Buteurs du jour', sub: 'à jouer seul, pas en combiné', sel: scorers, single: true },
-  ].filter(c => c.sel.length >= (c.single ? 1 : 3));
-  if (!cards.length) return '';
+    slot ? { title: `⏰ Meilleur créneau : ${hhmmFr(slot.start)}`, rule: `Le plus de matchs analysés à la même heure. À jouer vers ${hhmmFr(slot.betAt)}, quand les compos sont connues (${slot.official}/${slot.count} officielles).`, sel: [...slot.legs].sort(byTime), best: true }
+      : { title: '⏰ Meilleur créneau', rule: 'Le plus de matchs analysés à la même heure, à jouer 15 min avant avec les compos.', sel: [], empty: 'Pas de créneau avec au moins 2 pistes solides pour la suite de la journée.' },
+    { title: '🏠 Spécial domicile', rule: 'Favoris à domicile solides chez eux, face à un adversaire pas plus fort, sans absent clé ni fatigue de coupe d\'Europe.', sel: home, empty: 'Aucun favori à domicile assez solide pour la suite de la journée.' },
+    { title: '⚽ Buteurs', rule: 'À jouer en simple, pas en combiné. 🎲 = buteur double chance (« X ou Y marque »). Cote juste ≈ 1 ÷ probabilité (30 % → 3,3).', sel: scorers, single: true, empty: 'Aucun buteur à 30 % ou plus pour la suite de la journée.' },
+  ];
 
-  const time = t => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
   const card = c => {
-    const sel = c.single ? c.sel : [...c.sel].sort((x, y) => x.m.kickoff - y.m.kickoff);
-    const p = sel.reduce((acc, x) => acc * x.tip.p, 1);
-    const fmtP = p >= 0.01 ? pct(p) : `${(p * 100).toFixed(1).replace('.', ',')} %`;
+    if (!c.sel.length) return `<div class="combo-card empty"><div class="combo-card-head"><b>${c.title}</b><span class="small muted">${esc(c.rule)}</span></div><p class="small muted">${esc(c.empty)}</p></div>`;
+    const p = c.sel.reduce((acc, x) => acc * x.tip.p, 1);
     return `<div class="combo-card${c.best ? ' best' : ''}">
-      <div class="combo-card-head"><b>${c.title}</b><span class="small muted">${c.sub}</span></div>
-      <ul class="combo-mini">${sel.map(x => `<li><span class="c-time">${time(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span><small>${esc(x.tip.label)}${x.reasons && x.reasons.length ? ' · ' + esc(x.reasons[0]) : ''}</small></span><b>${pct(x.tip.p)}</b></li>`).join('')}</ul>
-      ${c.single ? '<div class="combo-total"><span class="small muted">Cote juste ≈ 1 ÷ probabilité (30 % → 3,3). Jouez-les si le bookmaker paie plus.</span></div>'
-        : `<div class="combo-total"><span>${sel.length} sélections · <b>${fmtP}</b></span><span>cote ≈ <b>${Math.round(1 / p).toLocaleString('fr-FR')}</b></span></div>`}
+      <div class="combo-card-head"><b>${c.title}</b><span class="small muted">${esc(c.rule)}</span></div>
+      <ul class="combo-mini">${c.sel.map(x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span><small><b>${esc(x.tip.label)}</b>${x.tip.odd ? ` · cote ${x.tip.odd.toFixed(2).replace('.', ',')}` : ''}${x.reasons && x.reasons.length ? ' · ' + esc(x.reasons.join(' · ')) : ''}</small></span><b>${pct(x.tip.p)}</b></li>`).join('')}</ul>
+      ${c.single ? '' : `<div class="combo-total"><span>${c.sel.length} sélections · <b>${p >= 0.01 ? pct(p) : '< 1 %'}</b></span><span>cote ≈ <b>${(1 / p).toFixed(1).replace('.', ',')}</b></span></div>`}
     </div>`;
   };
   return `<section class="combos">
-    <div class="top-head"><h2>🎯 Combinés du jour</h2><span class="small muted">construits le matin, sans attendre les compositions</span></div>
+    <div class="top-head"><h2>🎯 Combinés</h2></div>
     <div class="combo-grid">${cards.map(card).join('')}</div>
-    <p class="small muted">Les probabilités se multiplient : plus le combiné est long, plus le gain est gros et plus les chances sont faibles. Vérifiez les compositions avant les premiers matchs.</p>
+    <p class="small muted">Les probabilités se multiplient : plus le combiné est long, plus le gain est gros et plus les chances sont faibles.</p>
   </section>`;
 }
 
@@ -317,21 +321,26 @@ async function copyFavPrompt(btn) {
 function topHtml(list) {
   const top = topPicks(list, state.analyses, state.bilanRates || {});
   const rate = state.bilanTop;
-  const head = `<div class="top-head"><h2>Top du jour</h2>${rate && rate.n ? `<span class="small muted">Réussite du top sur les jours passés : <b>${pct(rate.ok / rate.n)}</b> (${rate.ok}/${rate.n})</span>` : ''}</div>`;
+  const head = `<div class="top-head"><h2>🏆 Top du jour</h2>${rate && rate.n ? `<span class="small muted">Réussite les jours passés : <b>${pct(rate.ok / rate.n)}</b> (${rate.ok}/${rate.n})</span>` : ''}</div>`;
   if (!top.length) {
     return `<section class="topday">${head}<p class="small muted">Aucune piste assez fiable pour l'instant. Le top se remplit quand les statistiques sont solides et que les compositions sont connues.</p></section>`;
   }
+  // Combiné du jour : les 3 pistes les plus sûres du top (★), affichées comme le reste dans l'ordre des horaires
+  const stars = new Set(top.length >= 2 ? top.slice(0, 3).map(x => x.m.id) : []);
+  const starSel = top.filter(x => stars.has(x.m.id));
+  const p = starSel.reduce((acc, x) => acc * x.tip.p, 1);
   return `<section class="topday">${head}
-    <ol class="top-list">${top.map(x => {
+    <ol class="top-list">${[...top].sort((x, y) => x.m.kickoff - y.m.kickoff).map(x => {
       const time = new Date(x.m.kickoff).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
       const why = (state.analyses[x.m.id].verdict.flags || []).slice(0, 2).map(f => f.t).join(' · ');
-      return `<li><button class="top-item" data-open="${esc(x.m.id)}">
+      return `<li><button class="top-item${stars.has(x.m.id) ? ' star' : ''}" data-open="${esc(x.m.id)}">
         <span class="c-time">${time}</span>
-        <span class="c-teams"><b>${esc(x.m.home.name)} – ${esc(x.m.away.name)}</b><small>${esc(x.tip.label)}${why ? ' · ' + esc(why) : ''}</small></span>
+        <span class="c-teams"><b>${stars.has(x.m.id) ? '★ ' : ''}${esc(x.m.home.name)} – ${esc(x.m.away.name)}</b><small>${esc(x.tip.label)}${why ? ' · ' + esc(why) : ''}</small></span>
         <span class="top-p"><b>${pct(x.tip.p)}</b><small>${x.official ? '✓ compos' : 'provisoire'}</small></span>
       </button></li>`;
     }).join('')}</ol>
-    <p class="small muted">« Provisoire » : en attente des compositions officielles, qui peuvent changer la piste.</p>
+    ${starSel.length >= 2 ? `<div class="combo-total star-total"><span>★ Combiné du jour : ${starSel.length} sélections · <b>${pct(p)}</b></span><span>cote ≈ <b>${(1 / p).toFixed(1).replace('.', ',')}</b></span></div>` : ''}
+    <p class="small muted">${starSel.length >= 2 ? `★ = les ${starSel.length} pistes les plus sûres. ` : ''}« Provisoire » : compos pas encore officielles.</p>
   </section>`;
 }
 
@@ -447,11 +456,15 @@ function keyInfo(m, a) {
     if (f && f.euro && f.rest != null && f.rest <= 4) out.push({ k: 'bad', t: `😓 ${m[side].name} fatigué : ${f.euro.comp}${f.euro.away ? ' à l\'extérieur' : ''} il y a ${f.rest} jour${f.rest > 1 ? 's' : ''}` });
     else if (f && f.rest != null && f.rest <= 2) out.push({ k: 'bad', t: `😓 ${m[side].name} : seulement ${f.rest} jour${f.rest > 1 ? 's' : ''} de repos` });
   }
+  // Tireurs de penalty : affichés dès que les compos officielles sont connues
+  if (m.lineups && m.lineups.home && m.lineups.home.status === 'officielle') {
+    for (const side of ['home', 'away']) { const p = penInfo(m, side); if (p) out.push({ k: p.k === 'bad' ? 'bad' : '', t: p.t }); }
+  }
   // Autres absents (sans détail) pour situer l'ampleur
   const known = new Set(out.map(o => o.t));
   const others = ['home', 'away'].map(s => ((m.injuries && m.injuries[s]) || []).filter(i => !isSuspension(i.reason) && ![...known].some(t => t.includes(i.name))).length);
   if (others[0] + others[1] >= 3) out.push({ k: '', t: `Autres absents : ${others[0]} côté ${m.home.name}, ${others[1]} côté ${m.away.name}` });
-  return out.slice(0, 6);
+  return out.slice(0, 8);
 }
 
 // Encadré rouge « Attention » : ce qui doit faire réfléchir avant de jouer
@@ -501,10 +514,12 @@ function compactHtml(m) {
   const compos = official ? '<span class="chip ok">✓ Compos officielles</span>'
     : mins <= 45 && mins > 0 ? '<span class="chip warn">⏳ Compos attendues</span>'
     : '<span class="chip">Compos probables</span>';
+  const done = isFinished(m);
   const fl = flagsHtml(m, a, 3);
-  const chips = compos + fl.chips;
-  const infos = keyInfo(m, a);
-  return `<article class="card compact v-${v.code}${state.hidden.has(m.id) ? ' is-hidden' : ''}" data-id="${esc(m.id)}">
+  const chips = done ? '' : compos + fl.chips;
+  const infos = done ? [] : keyInfo(m, a);
+  const favBtn = `<button class="fav-btn${favs.has(m.id) ? ' on' : ''}" data-act="fav" aria-pressed="${favs.has(m.id)}">${favs.has(m.id) ? '★ Favori' : '☆ Favori'}</button>`;
+  return `<article class="card compact v-${v.code}${done ? ' is-done' : ''}${state.hidden.has(m.id) ? ' is-hidden' : ''}" data-id="${esc(m.id)}">
     <button class="compact-main" data-act="open" aria-label="Ouvrir la fiche du match">
       <span class="c-time">${time}</span>
       <span class="c-teams"><span class="c-names">${esc(m.home.name)} – ${esc(m.away.name)}</span><small>${m.comp.flag} ${esc(m.comp.name)}</small></span>
@@ -512,9 +527,10 @@ function compactHtml(m) {
     </button>
     ${liveHtml(m, t)}
     <div class="c-line">${t ? `<span>${esc(t.label)}${t.odd ? ` <span class="muted">· cote ${t.odd.toFixed(2).replace('.', ',')}</span>${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}` : ''}</span><b>${pct(t.p)}</b>` : `<span class="muted">${v.code === 'skip' ? 'Aucune piste retenue' : 'Pas de piste solide'}</span>`}</div>
+    ${!done && v.reason ? `<div class="c-reason ${v.code}">${v.code === 'play' ? '✅' : v.code === 'watch' ? '⏳' : '✋'} ${esc(v.reason)}</div>` : ''}
     ${alertBoxHtml(infos)}${goodInfosHtml(infos)}
-    <div class="c-chips">${chips}<button class="fav-btn${favs.has(m.id) ? ' on' : ''}" data-act="fav" aria-pressed="${favs.has(m.id)}">${favs.has(m.id) ? '★ Favori' : '☆ Favori'}</button></div>
-    ${fl.box}
+    <div class="c-chips">${chips}${favBtn}</div>
+    ${done ? '' : fl.box}
   </article>`;
 }
 
@@ -547,6 +563,7 @@ function cardHtml(m) {
           <span class="badge ${v.code}">${esc(v.label)}</span>
           <div class="gauge"><i style="width:${v.score}%"></i></div><span class="score-num">${v.score}/100</span>
         </div>
+        ${v.reason ? `<div class="c-reason ${v.code} in-card">${esc(v.reason)}</div>` : ''}
         <div class="probs">
           <div class="h" style="flex:${a.p.home}">${pct(a.p.home)}</div>
           <div class="d" style="flex:${a.p.draw}">${pct(a.p.draw)}</div>
@@ -705,6 +722,10 @@ function tipWhy(t, m, a) {
   if (t.key === 'NBTTS') return `${scoreH < scoreA ? H : A} a du mal à marquer (${Math.min(scoreH, scoreA)} % de chances).`;
   if (t.key === 'H2G') return `${H} devrait marquer environ ${a.lh.toFixed(1)} buts.`;
   if (t.key === 'A2G') return `${A} devrait marquer environ ${a.la.toFixed(1)} buts.`;
+  if (t.key === 'SCD' && t.duo) {
+    const d = t.duo.map(p => `${p.name} ${pct(p.p1)}${p.status === 'titulaire' ? ' (titulaire)' : ''}`).join(' et ');
+    return `Il suffit qu'un des deux marque : ${d}. Pari « buteur double chance ».`;
+  }
   if (t.key === 'SC' || t.key === 'SC2') {
     const p = [...a.scorers.home, ...a.scorers.away].find(x => t.label.startsWith(x.name));
     return p ? `${p.goals} but${p.goals > 1 ? 's' : ''} cette saison pour ${p.team}${p.status === 'titulaire' ? ', titulaire confirmé' : ', compo pas encore confirmée'}.` : 'Buteur principal de son équipe.';
@@ -757,9 +778,12 @@ function detailHtml(m, a) {
   const easy = a.verdict.easy && a.verdict.easy.length ? `<p class="small muted">Écartés car trop évidents : ${esc(a.verdict.easy.map(x => `${x.label} (${pct(x.p)})`).join(', '))}.</p>` : '';
 
   const sec = (title, body, open) => `<details class="sec"${open ? ' open' : ''}><summary>${title}</summary><div class="sec-body">${body}</div></details>`;
+  const pens = ['home', 'away'].map(s => penInfo(m, s)).filter(Boolean);
+  const takers = new Set(pens.filter(p => p.main).map(p => lastName(p.main.name)));
+  const pensHtml = pens.length ? `<ul class="c-infos flat">${pens.map(p => `<li class="${p.k}">${esc(p.t)}</li>`).join('')}</ul>` : '<p class="small muted">Tireurs de penalty pas encore connus pour ces équipes.</p>';
   return `
   <div class="detail">
-    ${scorers.length ? sec('⚽ Buteurs', `<ul class="play-list">${scorers.map(p => `<li><div><b>${esc(p.name)}</b><span class="muted small">${esc(p.team)} · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} matchs` : ''} · ${{ titulaire: 'titulaire ✓', remplacant: 'sur le banc', incertain: 'incertain', probable: 'compo pas encore connue' }[p.status] || ''}${p.p2 >= 0.1 ? ` · doublé ${pct(p.p2)}` : ''}</span></div><b class="p">${pct(p.p1)}</b></li>`).join('')}</ul>`) : ''}
+    ${scorers.length || pens.length ? sec('⚽ Buteurs et tireurs de penalty', `${pensHtml}<ul class="play-list">${scorers.map(p => `<li><div><b>${esc(p.name)}${takers.has(lastName(p.name)) ? ' 🎯' : ''}</b><span class="muted small">${esc(p.team)} · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} matchs` : ''} · ${{ titulaire: 'titulaire ✓', remplacant: 'sur le banc', incertain: 'incertain', probable: 'compo pas encore connue' }[p.status] || ''}${p.p2 >= 0.1 ? ` · doublé ${pct(p.p2)}` : ''}</span></div><b class="p">${pct(p.p1)}</b></li>`).join('')}</ul>`) : ''}
     ${sec(`👥 Compositions et absents${official ? ' <span class="chip ok">officielles</span>' : ''}`, composBody)}
     ${sec('📈 Forme, niveau des adversaires, fatigue', formBody + notes)}
     ${sec('🔢 Toutes les probabilités', `${bookLine}${easy}<table>${a.markets.map(x => `<tr><td>${esc(x.label)}</td><td class="num">${pct(x.p)}</td></tr>`).join('')}</table>`)}
@@ -792,12 +816,20 @@ function renderResults() {
   const byComp = {};
   b.days.forEach(d => d.matches.forEach(m => m.picks.forEach(p => { const c = byComp[m.comp] = byComp[m.comp] || { n: 0, ok: 0 }; c.n++; if (p.ok) c.ok++; })));
   const rateCell = (o, n) => `<td class="num">${n}</td><td class="num"><b class="${o / n >= 0.55 ? 'good' : o / n < 0.45 ? 'bad' : ''}">${pct(o / n)}</b></td>`;
+  // Causes des échecs (classées par le robot depuis le 20/10)
+  const CAUSE = { rouge: ['🟥', 'carton rouge'], compo: ['👥', 'compo'], malchance: ['🍀', 'malchance'], stats: ['📊', 'erreur de stats'] };
+  const causes = {};
+  b.days.forEach(d => d.matches.forEach(m => { if (m.cause) causes[m.cause] = (causes[m.cause] || 0) + 1; }));
+  const causeHtml = Object.keys(causes).length ? `<div class="box wide"><h4>Pourquoi les pistes ont raté</h4>
+    <p>${Object.entries(CAUSE).filter(([k]) => causes[k]).map(([k, [i, l]]) => `${i} <b>${causes[k]}</b> ${l}`).join(' · ')}</p>
+    <p class="small muted">Seules les vraies erreurs de stats corrigent la mémoire du robot. Un carton rouge, une compo inconnue ou un match dominé sans réussite ne sont pas des erreurs d'analyse.</p></div>` : '';
   el.innerHTML = `
     <div class="summary">
       <div class="stat"><b>${pct(ok / all.length)}</b><span>pistes réussies (${ok}/${all.length})</span></div>
       <div class="stat"><b>${top.n ? pct(top.ok / top.n) : '–'}</b><span>réussite du top du jour${top.n ? ` (${top.ok}/${top.n})` : ''}</span></div>
       <div class="stat"><b>${b.days.length}</b><span>jour${b.days.length > 1 ? 's' : ''} suivis</span></div>
     </div>
+    ${causeHtml}
     <div class="rank-grid">
       <div class="box"><h4>Par type de pari</h4><table><tr><th>Pari</th><th class="num">Joués</th><th class="num">Réussite</th></tr>
         ${rates.map(([k, x]) => `<tr><td>${esc(KEY_LABEL[k] || k)}</td>${rateCell(x.ok, x.n)}</tr>`).join('')}</table>
@@ -806,7 +838,7 @@ function renderResults() {
         ${Object.entries(byComp).sort((x, y) => y[1].n - x[1].n).map(([c, x]) => `<tr><td>${esc(c)}</td>${rateCell(x.ok, x.n)}</tr>`).join('')}</table></div>
     </div>
     ${b.days.slice(0, 7).map(d => `<div class="box day"><h4>${new Date(d.date + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}</h4>
-      ${d.matches.map(m => `<div class="res-match"><div><b>${esc(m.home)} ${esc(m.score)} ${esc(m.away)}</b> <span class="muted small">${esc(m.comp)} · attendu ${esc(m.exp)}${m.top ? ' · TOP' : ''}</span></div>
+      ${d.matches.map(m => `<div class="res-match"><div><b>${esc(m.home)} ${esc(m.score)} ${esc(m.away)}</b> <span class="muted small">${esc(m.comp)} · attendu ${esc(m.exp)}${m.top ? ' · TOP' : ''}</span>${m.cause && CAUSE[m.cause] ? ` <span class="chip">${CAUSE[m.cause][0]} ${CAUSE[m.cause][1]}</span>` : ''}</div>
         <ul>${m.picks.map(p => `<li class="${p.ok ? 'ok' : 'ko'}">${p.ok ? '✓' : '✗'} ${esc(p.label)} <span class="muted">(${pct(p.p)})</span>${p.why ? `<div class="small muted">Pourquoi : ${esc(p.why)}</div>` : ''}</li>`).join('')}</ul></div>`).join('')}
     </div>`).join('')}
     <p class="small muted">Le robot retient, pour chaque équipe, l'écart entre les buts attendus et les buts réels sur ses 10 derniers matchs suivis, et corrige ses prochaines analyses (±15 % au maximum).</p>`;

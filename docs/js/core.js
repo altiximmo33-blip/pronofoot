@@ -485,6 +485,94 @@ export function failReason(m, lh, la, h, a) {
   return parts.join(' ; ');
 }
 
+// ---------- Tireurs de penalty ----------
+// Penalties tirés dans un programme ESPN (hors séances de tirs au but) : [{ team: 'espn-ID', ev, n, ok, m }]
+export function espnPenalties(scoreboardJson) {
+  const out = [];
+  for (const ev of scoreboardJson.events || []) {
+    const c = ev.competitions && ev.competitions[0];
+    if (!c || !c.status || !c.status.type || !c.status.type.completed) continue;
+    for (const x of c.details || []) {
+      const min = parseInt((x.clock && x.clock.displayValue) || '0', 10) || 0;
+      const who = x.athletesInvolved && x.athletesInvolved[0];
+      if (!x.penaltyKick || x.shootout || min > 120 || !who || !x.team) continue;
+      out.push({ team: 'espn-' + x.team.id, ev: ev.id, n: who.displayName, ok: !!x.scoringPlay, m: min });
+    }
+  }
+  return out;
+}
+
+// Tireurs d'une équipe, du plus utilisé au moins utilisé : [{ name, att, ok }]
+export function penTakers(list) {
+  const by = new Map();
+  for (const p of list || []) {
+    const x = by.get(p.n) || { name: p.n, att: 0, ok: 0, last: '' };
+    x.att++; if (p.ok) x.ok++; if (p.d > x.last) x.last = p.d;
+    by.set(p.n, x);
+  }
+  return [...by.values()].sort((a, b) => b.att - a.att || b.last.localeCompare(a.last)).slice(0, 3).map(({ name, att, ok }) => ({ name, att, ok }));
+}
+
+// ---------- Cause d'un échec : carton rouge, compo, malchance ou vraie erreur de stats ----------
+// Cartons rouges d'un match dans le programme ESPN : [{ side: 'home' | 'away', min }]
+export function espnRedCards(scoreboardJson, homeName, awayName) {
+  const id = espnFindEvent(scoreboardJson, homeName, awayName);
+  if (!id) return [];
+  const c = (scoreboardJson.events || []).find(e => e.id === id).competitions[0];
+  const homeId = String((c.competitors.find(x => x.homeAway === 'home') || {}).team?.id);
+  return (c.details || []).filter(d => d.redCard).map(d => ({
+    side: String(d.team && d.team.id) === homeId ? 'home' : 'away',
+    min: parseInt((d.clock && d.clock.displayValue) || '0', 10) || 0,
+  }));
+}
+
+const RESULT_HOME = ['1', 'H2+', '1O25', '1BTTS', '1CS'], RESULT_AWAY = ['2', 'A2+', '2O25', '2BTTS', '2CS'];
+const GOALS_OVER = ['O25', 'O35', 'BTTS', 'H2G', 'A2G', 'O15'];
+
+// ctx : { reds, sot: { home, away } | null, xi: { home: [noms], away: [noms] } | null }
+// Renvoie { k: 'rouge' | 'compo' | 'malchance' | 'stats', t: texte } — k ≠ 'stats' : le match n'apprend rien au robot
+export function failCause(m, an, h, a, failed, ctx) {
+  const name = s => m[s].name;
+  const keys = failed.map(p => p.key);
+  // Équipe dont la piste ratée avait besoin (victoire, ou buts à marquer)
+  const needs = new Set();
+  keys.forEach(k => {
+    if (RESULT_HOME.includes(k) || k === 'H2G') needs.add('home');
+    if (RESULT_AWAY.includes(k) || k === 'A2G') needs.add('away');
+    if (k === 'BTTS') { if (h === 0) needs.add('home'); if (a === 0) needs.add('away'); }
+  });
+  // Un carton rouge n'excuse l'échec que s'il a frappé l'équipe dont la piste avait besoin
+  const red = (ctx.reds || []).filter(r => r.min <= 75 && needs.has(r.side)).sort((x, y) => x.min - y.min)[0];
+  if (red) return { k: 'rouge', t: `Carton rouge pour ${name(red.side)} (${red.min}e minute) : match faussé, pas une erreur d'analyse.` };
+  const official = m.lineups && m.lineups.home && m.lineups.home.status === 'officielle';
+  if (!official && ctx.xi) {
+    for (const s of needs) {
+      const xi = ctx.xi[s];
+      if (!xi) continue;
+      const out = an.presence[s].players.filter(p => p.status === 'probable' && p.share >= 0.15 && !xi.some(n => norm(n).split(' ').pop() === norm(p.name).split(' ').pop()));
+      if (out.length) return { k: 'compo', t: `${out.map(p => `${p.name} (${p.goals} buts)`).join(', ')} n'était pas titulaire chez ${name(s)} : compo inconnue au moment de l'analyse.` };
+    }
+  }
+  if (!failed.length) return null;
+  const sot = ctx.sot;
+  if (sot) {
+    const other = s => (s === 'home' ? 'away' : 'home');
+    // Piste sur le résultat : l'équipe visée a nettement dominé (3 tirs cadrés de plus au moins)
+    for (const s of ['home', 'away']) {
+      const list = s === 'home' ? RESULT_HOME : RESULT_AWAY;
+      if (keys.some(k => list.includes(k)) && sot[s] - sot[other(s)] >= 3) return { k: 'malchance', t: `${name(s)} a dominé (${sot[s]} tirs cadrés contre ${sot[other(s)]}) sans être récompensé : bonne analyse, mauvais résultat.` };
+    }
+    // Piste sur les buts : l'équipe qui devait marquer s'est créé de quoi le faire
+    const goalKeys = keys.filter(k => GOALS_OVER.includes(k));
+    if (goalKeys.length === keys.length) {
+      const shooters = [...needs].filter(s => sot[s] >= (keys.includes('BTTS') ? 5 : 7));
+      if (needs.size && shooters.length === needs.size) return { k: 'malchance', t: `${shooters.map(s => `${name(s)} (${sot[s]} tirs cadrés)`).join(' et ')} s'est créé les occasions sans les mettre : maladresse ou gardien, pas les stats.` };
+      if (!needs.size && sot.home + sot.away >= 11) return { k: 'malchance', t: `Beaucoup d'occasions (${sot.home + sot.away} tirs cadrés) mais peu de buts : maladresse ou gardiens, pas les stats.` };
+    }
+  }
+  return { k: 'stats', t: failReason(m, an.lh, an.la, h, a) };
+}
+
 // ---------- Apprentissage : correction par équipe ----------
 // Pour chaque équipe, on garde les 10 derniers matchs suivis : buts attendus / buts réels,
 // en attaque et en défense. Si l'équipe marque (ou encaisse) régulièrement plus ou moins que prévu,
@@ -563,7 +651,7 @@ export function bestSlot(matches, analyses) {
       const t = analyses[m.id].tips.filter(x => !String(x.key).startsWith('SC') && !x.easy && x.p >= 0.55).sort((a, b) => b.p - a.p)[0];
       return t ? { m, tip: t, reasons: [] } : null;
     }).filter(Boolean).sort((a, b) => b.tip.p - a.tip.p);
-    if (legs.length < 3) continue;
+    if (legs.length < 2) continue;
     const official = slot.matches.filter(m => m.lineups && m.lineups.home && m.lineups.home.status === 'officielle').length;
     const score = legs.length + legs.slice(0, 5).reduce((s, x) => s + x.tip.p, 0) / 5;
     if (!best || score > best.score) best = { start: slot.start, betAt: slot.start - 15 * 60000, count: slot.matches.length, official, legs: legs.slice(0, 5), score };

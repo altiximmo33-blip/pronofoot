@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeMatch } from '../docs/js/model.js';
 import { compByAf } from '../docs/js/config.js';
-import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnScorers, espnStartersOf, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot, FDCOUK_CODES, fdcoukCompetition, fdcoukForMatch, fdcoukUpcomingOdds } from '../docs/js/core.js';
+import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnScorers, espnStartersOf, espnRedCards, failCause, espnPenalties, penTakers, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot, FDCOUK_CODES, fdcoukCompetition, fdcoukForMatch, fdcoukUpcomingOdds } from '../docs/js/core.js';
 
 const AF_KEY = process.env.APIFOOTBALL_KEY;
 const FD_KEY = process.env.FOOTBALLDATA_KEY;
@@ -104,6 +104,61 @@ async function notify(title, message) {
 
 // ---------- Bilan de la veille et apprentissage ----------
 const BILAN_FILE = path.join(DATA, 'bilan.json');
+
+// ---------- Tireurs de penalty : mémoire de tous les penalties de la saison (ESPN) ----------
+// Le robot parcourt les journées passées de chaque championnat, un peu à chaque passage,
+// puis retient qui a tiré chaque penalty pour chaque équipe.
+const PENS_FILE = path.join(DATA, 'penalties.json');
+async function penaltiesBackfill(budget) {
+  let P;
+  try { P = JSON.parse(await fs.readFile(PENS_FILE, 'utf8')); } catch { P = { scanned: {}, teams: {} }; }
+  P.cal = P.cal || {};
+  const yesterday = ymd(Date.now() - 86400000), today = ymd(Date.now());
+  let used = 0, added = 0;
+  for (const code of [...new Set(Object.values(ESPN_CODES))]) {
+    if (used >= budget) break;
+    const done = new Set(P.scanned[code] || []);
+    // Jours de match de la saison (calendrier « par jour » ; les coupes à calendrier par tour sont ignorées),
+    // relus une fois par jour seulement
+    if (!P.cal[code] || P.cal[code].at !== today) {
+      try {
+        const sb = await espn(`${ESPN_SITE}${code}/scoreboard`); used++;
+        P.cal[code] = { at: today, days: ((sb.leagues && sb.leagues[0] && sb.leagues[0].calendar) || []).filter(d => typeof d === 'string').map(d => d.slice(0, 10).replace(/-/g, '')) };
+      } catch { continue; }
+    }
+    const days = P.cal[code].days;
+    for (const d of days.filter(x => x <= yesterday && !done.has(x))) {
+      if (used >= budget) break;
+      try {
+        const sb = await espn(`${ESPN_SITE}${code}/scoreboard?dates=${d}`); used++;
+        for (const p of espnPenalties(sb)) {
+          const list = P.teams[p.team] = P.teams[p.team] || [];
+          if (list.some(x => x.ev === p.ev && x.n === p.n && x.m === p.m)) continue;
+          list.push({ ev: p.ev, d, n: p.n, ok: p.ok, m: p.m });
+          if (list.length > 40) list.shift();
+          added++;
+        }
+        done.add(d);
+      } catch { /* journée indisponible : on réessaiera */ }
+      await sleep(80);
+    }
+    P.scanned[code] = [...done];
+  }
+  await fs.writeFile(PENS_FILE, JSON.stringify(P));
+  console.log(`Penalties : ${used} journées lues, ${added} penalties ajoutés`);
+  return { P, added };
+}
+
+// Tireurs de penalty des deux équipes de chaque match (identifiants ESPN trouvés le matin)
+function attachPens(matches, P) {
+  let changed = false;
+  for (const m of matches) {
+    if (!m.espn) continue;
+    const pens = { home: penTakers(P.teams['espn-' + m.espn.home]), away: penTakers(P.teams['espn-' + m.espn.away]) };
+    if (JSON.stringify(pens) !== JSON.stringify(m.pens || null)) { m.pens = pens; changed = true; }
+  }
+  return changed;
+}
 const FINISHED = ['FT', 'AET', 'PEN'];
 
 async function readBilan() {
@@ -131,14 +186,28 @@ async function reviewDay(y, bilan) {
   if (bilan.days.some(d => d.date === y)) return null;
   let prev;
   try { prev = JSON.parse(await fs.readFile(path.join(DATA, 'archive', `${y}.json`), 'utf8')); } catch { return null; }
-  const scores = {}, boards = {}, day8 = y.replace(/-/g, '');
+  const scores = {}, boards = {}, ctxs = {}, day8 = y.replace(/-/g, '');
   for (const m of prev.matches) {
     const code = ESPN_CODES[m.comp && m.comp.af];
     if (!code || !m.stats) continue;
     try {
       boards[code] = boards[code] || await espn(`${ESPN_SITE}${code}/scoreboard?dates=${day8}`);
       const s = espnLiveScore(boards[code], m.home.name, m.away.name);
-      if (s && s.state === 'post') scores[m.id] = [s.h, s.a];
+      if (!s || s.state !== 'post') continue;
+      scores[m.id] = [s.h, s.a];
+      // De quoi expliquer un échec : cartons rouges, tirs cadrés, titulaires réels
+      const ctx = { reds: espnRedCards(boards[code], m.home.name, m.away.name), sot: null, xi: null };
+      const ids = espnEventTeams(boards[code], m.home.name, m.away.name);
+      if (ids) {
+        try {
+          const sum = await espn(`${ESPN_SITE}${code}/summary?event=${ids.id}`);
+          const sh = espnTeamMatchStats(sum, ids.homeId);
+          if (sh) ctx.sot = { home: sh.sotF, away: sh.sotA };
+          ctx.xi = { home: espnStartersOf(sum, ids.homeId), away: espnStartersOf(sum, ids.awayId) };
+        } catch { /* résumé indisponible */ }
+        await sleep(100);
+      }
+      ctxs[m.id] = ctx;
     } catch { /* compétition indisponible */ }
   }
   if (!Object.keys(scores).length) return null;
@@ -158,13 +227,20 @@ async function reviewDay(y, bilan) {
     const [h, a] = sc, an = analyses[m.id];
     const picks = an.tips.filter(t => !String(t.key).startsWith('SC')).map(t => {
       const ok = tipResult(t.key, h, a);
-      return { key: t.key, label: t.label, p: +t.p.toFixed(3), ok, why: ok === false ? failReason(m, an.lh, an.la, h, a) : '' };
+      return { key: t.key, label: t.label, p: +t.p.toFixed(3), ok };
     }).filter(p => p.ok !== null);
+    // Cause : carton rouge, compo, malchance ou vraie erreur de stats
+    const cause = failCause(m, an, h, a, picks.filter(p => !p.ok), ctxs[m.id] || {});
+    picks.forEach(p => { p.why = p.ok ? '' : cause ? cause.t : failReason(m, an.lh, an.la, h, a); });
     day.matches.push({
       id: m.id, comp: m.comp.name, home: m.home.name, away: m.away.name, score: `${h}-${a}`,
       exp: `${an.lh.toFixed(1)}-${an.la.toFixed(1)}`, verdict: an.verdict.label, top: topIds.has(m.id),
       official: !!(m.lineups && m.lineups.home && m.lineups.home.status === 'officielle'), picks,
+      cause: cause && picks.some(p => !p.ok) ? cause.k : null,
     });
+    // Seuls les matchs « normaux » nourrissent la mémoire : un carton rouge, une compo inconnue
+    // ou un match dominé sans réussite fausseraient la correction des équipes
+    if (cause && cause.k !== 'stats') continue;
     remember(m.home.id, m.home.name, 'att', an.lh, h);
     remember(m.away.id, m.away.name, 'att', an.la, a);
     remember(m.home.id, m.home.name, 'def', an.la, a);
@@ -268,6 +344,7 @@ async function enrichEspn(matches, bilan, today) {
       ids = espnEventTeams(boards[code + day], m.home.name, m.away.name);
     } catch (e) { console.warn(e.message); continue; }
     if (!ids) continue;
+    m.espn = { id: ids.id, home: ids.homeId, away: ids.awayId };
     m.perf = {}; m.fatigue = {}; m.notes = m.notes || [];
     for (const side of ['home', 'away']) {
       const espnId = side === 'home' ? ids.homeId : ids.awayId, name = m[side].name;
@@ -600,6 +677,11 @@ async function main() {
   } else {
     afUsed = state.afUsed || 0;
   }
+  // Tireurs de penalty : la mémoire se complète un peu à chaque passage
+  try {
+    const { P } = await penaltiesBackfill(changed ? 200 : 40); // plus large juste après la collecte du matin
+    if (attachPens(state.matches, P)) changed = true;
+  } catch (e) { console.warn('Penalties :', e.message); }
   phase = 'compositions et scores en direct';
   const usedBefore = afUsed;
   if (await lineupsPass(state)) changed = true;

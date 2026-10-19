@@ -354,3 +354,32 @@ tr.value td { background: var(--value-soft); }
   .cmp td small { white-space: normal; }
   .cmp td .val { font-size: 16px; }
 }
+
+/* --- Code couleur des verdicts (19/10) --- */
+.card.v-play { border: 2px solid var(--go); border-left-width: 6px; background: linear-gradient(180deg, var(--go-soft), var(--panel) 70px); }
+.card.v-play .badge.play { background: var(--go); color: #fff; font-size: 13px; padding: 4px 10px; }
+.card.v-play .c-line { font-size: 15px; font-weight: 700; }
+.card.v-play .c-line b { color: var(--go); font-size: 16px; }
+.card.v-watch { border-left: 6px solid var(--warn); }
+.card.v-skip { opacity: .75; }
+.card.is-done { opacity: .9; }
+.c-reason { padding: 0 14px 8px 64px; font-size: 12.5px; font-weight: 600; }
+.c-reason.play { color: var(--go); }
+.c-reason.watch { color: var(--warn); }
+.c-reason.skip { color: var(--skip); }
+.c-reason.in-card { padding: 6px 0 0; }
+.slot-head .go { color: var(--go); }
+.past { margin-top: 18px; }
+.past-head { width: 100%; display: flex; justify-content: space-between; gap: 8px; padding: 12px 14px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--panel); color: var(--text); font: inherit; font-weight: 700; cursor: pointer; }
+.past .match-list { margin-top: 10px; }
+.top-item.star { background: var(--go-soft); }
+.star-total { margin-top: 8px; border-radius: 9px; }
+@media (max-width: 520px) { .c-reason { padding-left: 14px; } }
+.sum-line { margin: 0 0 4px; font-size: 13px; color: var(--muted); }
+.sum-line b { color: var(--text); }
+.sum-line b.go { color: var(--go); }
+.sum-line b.warn { color: var(--warn); }
+.combo-card.empty { opacity: .8; }
+.filters { margin-bottom: 8px; }
+.filters > summary { cursor: pointer; font-size: 13.5px; font-weight: 600; color: var(--muted); padding: 6px 0; }
+.filters[open] > summary { margin-bottom: 6px; }

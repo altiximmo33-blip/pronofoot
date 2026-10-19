@@ -5,6 +5,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>PronoFoot</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
+  <!-- Écran d'accueil de l'iPhone : icône et ouverture en plein écran -->
+  <link rel="apple-touch-icon" href="icon-180.png">
+  <link rel="manifest" href="manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="PronoFoot">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="theme-color" content="#0f8a4f">
   <link rel="stylesheet" href="style.css">
   <style>#tabs [data-tab="settings"], #btn-notify { display: none; }</style>
 </head>
@@ -45,6 +53,7 @@
         </div>
         <p class="small" id="add-msg" style="color:var(--bad)"></p>
       </div>
+      <details class="filters"><summary>🔍 Rechercher, filtrer, trier</summary>
       <div class="toolbar">
         <input id="f-search" type="search" placeholder="Rechercher une équipe…">
         <select id="f-comp"></select>
@@ -56,11 +65,11 @@
         </select>
         <select id="f-sort">
           <option value="slot">Par créneau horaire</option>
-          <option value="time">Trier par heure</option>
-          <option value="score">Trier par intérêt</option>
+          <option value="time">Liste par heure</option>
         </select>
         <label class="check"><input type="checkbox" id="f-hidden"> Voir les masqués <span id="c-hidden"></span></label>
       </div>
+      </details>
       <div class="summary" id="summary"></div>
       <div id="match-list"></div>
     </section>
@@ -80,7 +89,7 @@
   <script>
     // Mise à jour automatique de l'application : quand une nouvelle version est publiée
     // (version.json), le téléphone recharge tous les fichiers sans vider le cache à la main.
-    var APP_VERSION = '2026-10-19d';
+    var APP_VERSION = '2026-10-19f';
     var APP_FILES = ['index.html', 'aide.html', 'style.css', 'js/app.js', 'js/engine.js', 'js/model.js',
       'js/core.js', 'js/config.js', 'js/claude.js', 'js/store.js', 'js/today.js'];
     window.pfUpdate = function (force) {
