@@ -35,6 +35,15 @@ export const COMPETITIONS = [
   { af: 218, name: 'Bundesliga', country: 'Autriche', flag: '🇦🇹', type: 'league', odds: 'soccer_austria_bundesliga' },
   { af: 197, name: 'Super League', country: 'Grèce', flag: '🇬🇷', type: 'league', odds: 'soccer_greece_super_league' },
   { af: 119, name: 'Superliga', country: 'Danemark', flag: '🇩🇰', type: 'league', odds: 'soccer_denmark_superliga' },
+  // Championnats ajoutés le 19/10 (stats via ESPN pour Roumanie, Chypre, Arabie saoudite ;
+  // les autres sont listés via API-Football, sans statistiques)
+  { af: 283, name: 'Liga I', country: 'Roumanie', flag: '🇷🇴', type: 'league' },
+  { af: 318, name: '1re division', country: 'Chypre', flag: '🇨🇾', type: 'league' },
+  { af: 307, name: 'Saudi Pro League', country: 'Arabie saoudite', flag: '🇸🇦', type: 'league' },
+  { af: 116, name: 'Vysshaya Liga', country: 'Biélorussie', flag: '🇧🇾', type: 'league' },
+  { af: 327, name: 'Erovnuli Liga', country: 'Géorgie', flag: '🇬🇪', type: 'league' },
+  { af: 362, name: 'A Lyga', country: 'Lituanie', flag: '🇱🇹', type: 'league' },
+  { af: 365, name: 'Virsliga', country: 'Lettonie', flag: '🇱🇻', type: 'league' },
 ];
 
 export const compByAf = Object.fromEntries(COMPETITIONS.map(c => [c.af, c]));

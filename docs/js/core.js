@@ -314,6 +314,7 @@ export const ESPN_CODES = {
   140: 'esp.1', 143: 'esp.copa_del_rey', 135: 'ita.1', 137: 'ita.coppa_italia', 78: 'ger.1', 79: 'ger.2', 81: 'ger.dfb_pokal',
   88: 'ned.1', 94: 'por.1', 144: 'bel.1', 207: 'sui.1', 203: 'tur.1', 179: 'sco.1', 218: 'aut.1', 197: 'gre.1', 119: 'den.1',
   2: 'uefa.champions', 3: 'uefa.europa', 848: 'uefa.europa.conf',
+  283: 'rou.1', 318: 'cyp.1', 307: 'ksa.1',
 };
 
 const espnTeam = t => ({ id: 'espn-' + t.id, name: t.displayName || t.name, shortName: t.shortDisplayName || t.name, tla: t.abbreviation });
@@ -335,6 +336,17 @@ export function espnCompetition(standingsJson, schedulesJson) {
     const sc = x => x.score && (x.score.value != null ? +x.score.value : +x.score.displayValue);
     seen.add(ev.id);
     matches.push({ utcDate: ev.date, homeTeam: espnTeam(h.team), awayTeam: espnTeam(a.team), score: { fullTime: { home: sc(h), away: sc(a) } } });
+  }
+  // Pas de classement publié (ex. Roumanie) : on le recalcule à partir des résultats
+  if (!table.length) {
+    const pts = new Map();
+    const add = (t, p, gd) => { const x = pts.get(t.id) || { team: t, p: 0, gd: 0 }; x.p += p; x.gd += gd; pts.set(t.id, x); };
+    matches.forEach(g => {
+      const h = g.score.fullTime.home, a = g.score.fullTime.away;
+      add(g.homeTeam, h > a ? 3 : h === a ? 1 : 0, h - a);
+      add(g.awayTeam, a > h ? 3 : h === a ? 1 : 0, a - h);
+    });
+    [...pts.values()].sort((x, y) => y.p - x.p || y.gd - x.gd).forEach((x, i) => table.push({ team: x.team, position: i + 1 }));
   }
   // Journée en cours estimée : nombre de matchs joués par équipe en moyenne
   const matchday = table.length ? Math.round((matches.length * 2) / table.length) : null;

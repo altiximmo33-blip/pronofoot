@@ -72,7 +72,14 @@ async function espn(url) {
 async function espnLoadCompetition(code) {
   const st = await espn(`https://site.api.espn.com/apis/v2/sports/soccer/${code}/standings`);
   const groups = st.children || [st];
-  const ids = groups.flatMap(g => ((g.standings && g.standings.entries) || []).map(e => e.team.id));
+  let ids = groups.flatMap(g => ((g.standings && g.standings.entries) || []).map(e => e.team.id));
+  // Pas de classement publié (ex. Roumanie) : liste des équipes du championnat
+  if (!ids.length) {
+    try {
+      const t = await espn(`${ESPN_SITE}${code}/teams`);
+      ids = ((t.sports && t.sports[0].leagues[0].teams) || []).map(x => x.team.id);
+    } catch (e) { console.warn(e.message); }
+  }
   const schedules = [];
   for (const id of ids) {
     try { schedules.push(await espn(`${ESPN_SITE}${code}/teams/${id}/schedule`)); } catch (e) { console.warn(e.message); }
@@ -338,6 +345,14 @@ async function daily(today) {
     console.warn('API-Football indisponible, programme pris sur ESPN :', e.message);
     list = await espnFixtures(today);
     afDown = true;
+  }
+  // Complète avec ESPN les championnats qu'API-Football n'a pas renvoyés
+  if (!afDown) {
+    try {
+      const have = new Set(list.map(f => f.league.id));
+      const extra = (await espnFixtures(today)).filter(f => !have.has(f.league.id));
+      if (extra.length) { list = list.concat(extra); console.log(`${extra.length} matchs ajoutés depuis ESPN`); }
+    } catch (e) { console.warn('Complément ESPN :', e.message); }
   }
   console.log(`${list.length} matchs suivis aujourd'hui${afDown ? ' (programme ESPN)' : ''}`);
 

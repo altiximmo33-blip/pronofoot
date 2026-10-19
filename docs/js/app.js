@@ -62,7 +62,8 @@ function render() {
   const next = state.kind === 'auto' ? 'compos cherchées toutes les 5 min, d\'1 h avant jusqu\'au coup d\'envoi' : nextCheck();
   $('#status').innerHTML = [
     state.kind === 'auto' ? '<span class="pill live">● Robot automatique</span>' : live ? '<span class="pill live">● Données réelles</span>' : state.kind === 'today' ? '<span class="pill live">● Matchs réels du jour</span>' : '<span class="pill demo">● Mode démo</span>',
-    state.loading ? '<span>Chargement…</span>' : state.lastUpdate ? `<span>Mis à jour à ${new Date(state.lastUpdate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>` : '',
+    state.loading ? '<span>Chargement…</span>' : state.lastUpdate ? `<span>Dernière nouveauté à ${new Date(state.lastUpdate).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>` : '',
+    state.lastRun ? `<span>${state.lastRun.ok ? '✓' : '⚠'} Robot vérifié à ${new Date(state.lastRun.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}</span>` : '',
     next ? `<span>Prochaine vérification : ${esc(next)}</span>` : '',
     state.quota.af != null ? `<span>API-Football : ${state.quota.af} requêtes restantes</span>` : '',
     state.quota.odds != null ? `<span>Cotes : ${state.quota.odds} crédits</span>` : '',

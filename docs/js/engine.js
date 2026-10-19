@@ -52,6 +52,12 @@ export async function loadAll() {
       const s = await fetch('data/robot-status.json?t=' + Date.now(), { cache: 'no-store' });
       state.robotStatus = s.ok ? await s.json() : null;
     } catch { state.robotStatus = null; }
+    // Dernier passage du robot (même quand il n'a rien trouvé de nouveau)
+    try {
+      const r = await fetch('https://api.github.com/repos/altiximmo33-blip/pronofoot/actions/workflows/collecte.yml/runs?per_page=1', { cache: 'no-store' });
+      const run = r.ok ? (await r.json()).workflow_runs[0] : null;
+      state.lastRun = run ? { at: Date.parse(run.updated_at), ok: run.conclusion !== 'failure' } : null;
+    } catch { /* information facultative */ }
     buildBanner();
   } catch (e) {
     state.error = e.message;
