@@ -149,6 +149,17 @@ function fitToPercent(pc) {
   return { lh: best.lh, la: best.la };
 }
 
+// Ligne d'un poste (ESPN : G, CD-L, LB, AM-R, F… ; API-Football : G, D, M, F) : 'G' | 'D' | 'M' | 'F' | ''
+export function lineOf(pos) {
+  const p = String(pos || '').toUpperCase();
+  if (!p || p === 'SUB') return '';
+  if (p === 'G' || p === 'GK') return 'G';
+  if (/^(D|CB|CD|LB|RB|LWB|RWB|SW|WB)/.test(p)) return 'D';
+  if (/^(CF|ST|LW|RW|LF|RF|F)/.test(p)) return 'F';
+  if (/^(M|DM|CM|AM|LM|RM)/.test(p)) return 'M';
+  return '';
+}
+
 // --- 2. Absences et remplaçants ------------------------------------------------
 function teamPresence(m, side) {
   const lu = m.lineups && m.lineups[side];
@@ -170,7 +181,9 @@ function teamPresence(m, side) {
     // Part des buts de l'équipe, calculée par match joué quand on le sait (joueur arrivé en cours
     // de saison, retour de blessure), sans descendre sous la moitié des matchs de l'équipe
     const games = m.teamGames && m.teamGames[side];
-    const share = p.played && games ? (p.goals / Math.max(p.played, games / 2)) / (teamGoals / games) : p.goals / teamGoals;
+    const raw = p.played && games ? (p.goals / Math.max(p.played, games / 2)) / (teamGoals / games) : p.goals / teamGoals;
+    // Petit échantillon (début de saison, coupe d'Europe) : part ramenée vers zéro, sinon 1 but sur 2 = « 50 % des buts »
+    const share = raw * teamGoals / (teamGoals + 4);
     return { ...p, team: m[side].name, status, reason: inj ? inj.reason : (status === 'absent' ? 'Hors groupe' : ''), share: Math.min(share, 0.7) };
   });
 
@@ -186,15 +199,45 @@ function teamPresence(m, side) {
   });
   // Absents qui ne sont pas des buteurs (défenseurs, gardiens...) : léger impact défensif
   const otherOut = injuries.filter(i => !pool.some(p => samePlayer(i, p)) && !/question|doubt/i.test(i.type || ''));
-  // Turn-over : titulaires du dernier match qui ne démarrent pas aujourd'hui
-  let rotation = null, rotFactor = 1;
-  const prev = m.lastXI && m.lastXI[side];
-  if (official && prev && prev.length >= 11) {
-    const out = prev.filter(n => !lu.startXI.some(x => samePlayer(x, { name: n })));
-    rotation = { changes: out.length, out };
-    if (out.length >= 5) rotFactor = 0.95; // équipe remaniée : automatismes perdus
+  // Turn-over : titulaires habituels (5 derniers matchs) absents de la compo officielle, ligne par ligne,
+  // quel que soit leur poste (un défenseur forfait non signalé par la liste des blessés est rattrapé ici)
+  let rotation = null, attF = 1, defF = 1;
+  if (official) {
+    const squad = (m.squad && m.squad[side]) || [];
+    const fromSquad = n => squad.find(s => samePlayer({ name: s.n }, { name: n }));
+    const inXI = n => lu.startXI.some(x => samePlayer(x, { name: n }));
+    const recent = m.recentXI && m.recentXI[side];
+    const prev = m.lastXI && m.lastXI[side];
+    let regulars = null, of = 1;
+    if (recent && recent.length >= 3) {
+      of = recent.length;
+      const cnt = new Map();
+      recent.forEach(xi => xi.forEach(p => { const c = cnt.get(p.n) || { n: p.n, l: p.l, starts: 0 }; c.starts++; if (!c.l) c.l = p.l; cnt.set(p.n, c); }));
+      regulars = [...cnt.values()].filter(c => c.starts >= Math.ceil(of * 0.6));
+    } else if (prev && prev.length >= 11) {
+      regulars = prev.map(n => ({ n: typeof n === 'string' ? n : n.n, l: typeof n === 'string' ? '' : n.l, starts: 1 }));
+    }
+    if (regulars) {
+      const out = regulars.filter(r => !inXI(r.n)).map(r => {
+        const sq = fromSquad(r.n);
+        return { n: r.n, l: r.l || (sq && sq.l) || '', starts: r.starts, bench: (lu.subs || []).some(x => samePlayer(x, { name: r.n })) };
+      });
+      const inn = lu.startXI.filter(x => !regulars.some(r => samePlayer(x, { name: r.n }))).map(x => {
+        const sq = fromSquad(x.name);
+        return { n: x.name, l: lineOf(x.pos) || (sq && sq.l) || '', apps: sq ? sq.apps : null };
+      });
+      rotation = { changes: out.length, out, inn, of };
+      // Effet sur les buts : défense remaniée = l'adversaire marque plus ; attaque remaniée = on marque moins
+      // (les buteurs absents sont déjà comptés plus haut : on ne les compte pas deux fois)
+      const notScorer = o => !pool.some(p => samePlayer(p, { name: o.n }));
+      const rookie = l => inn.filter(x => x.l && l.includes(x.l) && x.apps != null && x.apps <= 2).length;
+      const defOut = out.filter(o => o.l === 'G').length * 1.5 + out.filter(o => o.l === 'D').length;
+      const attOut = out.filter(o => o.l === 'F' && notScorer(o)).length + out.filter(o => o.l === 'M' && notScorer(o)).length * 0.5;
+      defF = 1 + Math.min(0.12, 0.025 * defOut + 0.02 * rookie('GD'));
+      attF = 1 - Math.min(0.12, 0.03 * attOut + 0.02 * rookie('MF'));
+    }
   }
-  return { official, players, missing, otherOut, rotation, absFactor: Math.max(factor, 0.6), factor: Math.max(factor, 0.6) * rotFactor, defPenalty: 1 + Math.min(otherOut.length * 0.03, 0.12) + (rotFactor < 1 ? 0.03 : 0) };
+  return { official, players, missing, otherOut, rotation, absFactor: Math.max(factor, 0.6), factor: Math.max(factor, 0.6) * attF, defPenalty: Math.min(1.2, (1 + Math.min(otherOut.length * 0.03, 0.12)) * defF) };
 }
 
 // --- 3. Forme -----------------------------------------------------------------
@@ -282,7 +325,7 @@ export function analyzeMatch(m) {
   const presenceMult = { titulaire: 0.9, probable: 0.8, incertain: 0.45, remplacant: 0.3, absent: 0 };
   // Les buts habituels des absents se reportent sur les joueurs présents (division par pres.absFactor)
   const scorerList = (pres, lambda, team) => pres.players
-    .filter(p => p.status !== 'absent')
+    .filter(p => p.status !== 'absent' && p.goals >= 2)
     .map(p => {
       const mu = lambda * Math.min(p.share / pres.absFactor, 0.7) * presenceMult[p.status];
       return { ...p, team, p1: 1 - Math.exp(-mu), p2: 1 - Math.exp(-mu) * (1 + mu) };
@@ -324,7 +367,7 @@ function buildVerdict(c) {
   const sc = [...c.scorers.home, ...c.scorers.away].sort((a, b) => b.p1 - a.p1);
   // Pari buteur : à partir de 30 % (cote d'environ 3), titulaire confirmé en priorité
   const scorerTip = sc.find(p => p.status === 'titulaire' && p.p1 >= 0.3 && p.p1 < 0.7) || sc.find(p => p.p1 >= 0.3 && p.p1 < 0.7);
-  if (scorerTip) tips.push({ key: 'SC', label: `${scorerTip.name} buteur${scorerTip.status === 'titulaire' ? ' (titulaire)' : ''}`, p: scorerTip.p1, edge: null, team: scorerTip.team });
+  if (scorerTip) tips.push({ key: 'SC', label: `${scorerTip.name} buteur${scorerTip.status === 'titulaire' ? ' (titulaire)' : ''}`, p: scorerTip.p1, edge: null, team: scorerTip.team, player: scorerTip.name });
   // Buteur double chance : « X ou Y marque » avec les deux meilleurs buteurs présents
   // (on suppose les deux événements indépendants : légèrement optimiste si les deux jouent ensemble)
   const duo = sc.filter(p => p.p1 >= 0.25 && p.status !== 'remplacant' && p.status !== 'incertain').slice(0, 2);
@@ -333,7 +376,7 @@ function buildVerdict(c) {
     if (pd >= 0.45 && pd < 0.85) tips.push({ key: 'SCD', label: `${duo[0].name} ou ${duo[1].name} buteur`, p: pd, edge: null, duo: duo.map(p => ({ name: p.name, team: p.team, p1: p.p1, goals: p.goals, status: p.status })) });
   }
   const dbl = sc.find(p => p.p2 >= 0.12);
-  if (dbl) tips.push({ key: 'SC2', label: `${dbl.name} doublé (pari osé)`, p: dbl.p2, edge: null });
+  if (dbl) tips.push({ key: 'SC2', label: `${dbl.name} doublé (pari osé)`, p: dbl.p2, edge: null, player: dbl.name });
   // Les paris évidents, cités seulement pour expliquer pourquoi on les écarte
   const easy = markets.filter(x => x.easy && x.p >= 0.6 && ['1', '2', 'O15', 'U25', 'O25', '1N', 'N2'].includes(x.key)).sort((a, b) => b.p - a.p).slice(0, 2);
 

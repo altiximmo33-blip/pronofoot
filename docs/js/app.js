@@ -2,7 +2,7 @@ import { COMPETITIONS } from './config.js';
 import * as E from './engine.js';
 const { state, onChange, start, loadAll, toggleHidden, clearAlerts, saveSettings, testKeys } = E;
 import { load, save } from './store.js';
-import { topPicks, tipResult, bestSlot } from './core.js';
+import { topPicks, tipResult, bestSlot, rotationText } from './core.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -203,73 +203,131 @@ function slotHtml(slot) {
   </section>`;
 }
 
-// Combinés du jour : trois cartes, chacune avec sa propre règle (pas de doublon avec le top du jour).
-// Toutes les sélections sont rangées par horaire, pour les retrouver facilement chez le bookmaker.
+// Combinés du jour. Toutes les sélections sont rangées par horaire, pour les retrouver facilement chez le bookmaker.
+// Chaque sélection peut être retirée (✕) ; « Mon combiné perso » se remplit avec le bouton ＋ des fiches.
 const TIER_RANK = { gros: 3, moyen: 2, faible: 1 };
 const byTime = (x, y) => x.m.kickoff - y.m.kickoff;
 const hhmmFr = t => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
 
-// Spécial domicile : favori à domicile solide chez lui, adversaire pas plus fort, pas d'absent clé ni de fatigue
+// Retraits et combiné perso : gardés sur ce téléphone pour la journée
+const dayLoad = k => { const v = load(k, null); return v && v.date === parisToday() ? v.data : null; };
+const dropped = dayLoad('combo-drop') || {};   // { idDuCombiné: [idsDesMatchs] }
+let perso = dayLoad('combo-perso') || [];      // [{ id, key, label, p }]
+const saveDropped = () => save('combo-drop', { date: parisToday(), data: dropped });
+const savePerso = () => save('combo-perso', { date: parisToday(), data: perso });
+const inPerso = (id, key) => perso.some(x => x.id === id && (key == null || x.key === key));
+function togglePerso(m, tip) {
+  if (inPerso(m.id, tip.key)) perso = perso.filter(x => !(x.id === m.id && x.key === tip.key));
+  else perso = [...perso.filter(x => x.id !== m.id), { id: m.id, key: tip.key, label: tip.label, p: tip.p }];
+  savePerso();
+}
+
+// Raisons d'un favori, en une ligne : bilan, forme, niveau, absents vérifiés ou non
+const FORM_FR = { W: 'V', D: 'N', L: 'D' };
+function favReasons(m, side) {
+  const other = side === 'home' ? 'away' : 'home';
+  const ts = m.teamStats || {}, me = ts[side] && ts[side][side], opp = ts[other] && ts[other][other];
+  const r = [];
+  if (me && me.p && me.w != null) r.push(`${me.w}/${me.p} victoires ${side === 'home' ? 'à domicile' : 'à l\'extérieur'}`);
+  if (opp && opp.p && opp.w != null) r.push(`${m[other].name} ${opp.w}/${opp.p} ${other === 'home' ? 'à domicile' : 'à l\'extérieur'}`);
+  const f = m.form && m.form[side];
+  if (f) r.push(`forme ${f.slice(-5).split('').map(c => FORM_FR[c] || c).join('')}`);
+  if (m.tiers && m.tiers[other] === 'faible') r.push('adversaire faible');
+  const inj = (m.injuries && m.injuries[side]) || [];
+  r.push(m.injChecked ? (inj.length ? `${inj.length} absent${inj.length > 1 ? 's' : ''} (aucun buteur clé)` : '✓ pas d\'absent signalé') : '⚠ absents pas encore vérifiés');
+  return r;
+}
+// Peut-on compter sur ce favori ? Pas de buteur clé absent, pas de fatigue de coupe d'Europe, adversaire pas plus fort
+function solidFav(m, a, side) {
+  const other = side === 'home' ? 'away' : 'home';
+  const tF = m.tiers && TIER_RANK[m.tiers[side]], tO = m.tiers && TIER_RANK[m.tiers[other]];
+  if (tF && tO && tF < tO) return false;
+  if (a.presence[side].players.some(x => x.status === 'absent' && x.share >= 0.15)) return false;
+  const rot = a.presence[side].rotation;
+  if (rot && rot.changes >= 4) return false;
+  const f = m.fatigue && m.fatigue[side];
+  return !(f && f.euro && f.rest != null && f.rest <= 3);
+}
+const usable = m => m.status === 'NS' && m.stats && state.analyses[m.id] && Math.min(m.stats.home.p, m.stats.away.p) >= 4;
+
+// 🛡️ Favoris du jour : tous les favoris qui devraient gagner sauf surprise (60 % et plus), même avant les compos
+function favLegs(list) {
+  return list.filter(usable).map(m => {
+    const a = state.analyses[m.id], side = a.p.home >= a.p.away ? 'home' : 'away', p = a.p[side];
+    if (p < 0.6 || !solidFav(m, a, side)) return null;
+    const odd = m.odds && m.odds.h2h && m.odds.h2h[side];
+    return { m, tip: { key: side === 'home' ? '1' : '2', label: `Victoire ${m[side].name}`, p, odd }, reasons: favReasons(m, side) };
+  }).filter(Boolean).sort(byTime);
+}
+// 🏠 Spécial domicile : victoires à domicile de 55 à 90 %
 function homeLegs(list) {
-  const out = [];
-  for (const m of list) {
-    const a = state.analyses[m.id];
-    if (!a || m.status !== 'NS' || !m.stats || Math.min(m.stats.home.p, m.stats.away.p) < 4) continue;
-    const p = a.p.home;
-    if (p < 0.55 || p > 0.9) continue;
-    const tH = m.tiers && TIER_RANK[m.tiers.home], tA = m.tiers && TIER_RANK[m.tiers.away];
-    if (tH && tA && tH < tA) continue;
-    if (a.presence.home.players.some(x => x.status === 'absent' && x.share >= 0.15)) continue;
-    const f = m.fatigue && m.fatigue.home;
-    if (f && f.euro && f.rest != null && f.rest <= 3) continue;
-    const ts = m.teamStats || {}, hh = ts.home && ts.home.home, aa = ts.away && ts.away.away;
-    const reasons = [];
-    if (hh && hh.p && hh.w != null) reasons.push(`${hh.w} victoire${hh.w > 1 ? 's' : ''} sur ${hh.p} à domicile`);
-    if (aa && aa.p && aa.w != null) reasons.push(`${m.away.name} : ${aa.w} sur ${aa.p} à l'extérieur`);
-    const o = m.odds && m.odds.h2h && m.odds.h2h.home;
-    out.push({ m, tip: { label: `Victoire ${m.home.name}`, p, odd: o }, reasons });
-  }
-  return out.sort((x, y) => y.tip.p - x.tip.p).slice(0, 5).sort(byTime);
+  return list.filter(usable).map(m => {
+    const a = state.analyses[m.id], p = a.p.home;
+    if (p < 0.55 || p > 0.9 || !solidFav(m, a, 'home')) return null;
+    return { m, tip: { key: '1', label: `Victoire ${m.home.name}`, p, odd: m.odds && m.odds.h2h && m.odds.h2h.home }, reasons: favReasons(m, 'home') };
+  }).filter(Boolean).sort(byTime);
+}
+// ✍️ Mon combiné perso : probabilités recalculées à chaque actualisation
+function persoLegs() {
+  return perso.map(x => {
+    const m = state.matches.find(y => y.id === x.id), a = m && state.analyses[m.id];
+    if (!m || !a) return null;
+    const mk = a.markets.find(k => k.key === x.key) || a.tips.find(t => t.key === x.key);
+    return { m, tip: { key: x.key, label: x.label, p: mk ? mk.p : x.p, odd: mk && mk.odd }, reasons: [], perso: true };
+  }).filter(Boolean).sort(byTime);
 }
 
 function combosHtml(list) {
   const slot = bestSlot(list, state.analyses);
-  const home = homeLegs(list);
-  const scorers = list.filter(m => m.status === 'NS' && m.stats && state.analyses[m.id])
-    .flatMap(m => { const a = state.analyses[m.id]; return [...a.scorers.home, ...a.scorers.away].map(p => ({ m, p })); })
-    .filter(x => x.p.p1 >= 0.3).sort((x, y) => y.p.p1 - x.p.p1).slice(0, 6)
-    .map(({ m, p }) => {
+  // Buteurs regroupés par match : une ligne par match, avec ses options (buteurs seuls, puis « X ou Y » double chance)
+  const scorers = list.filter(m => m.status === 'NS' && m.stats && state.analyses[m.id]).map(m => {
+    const a = state.analyses[m.id];
+    const singles = [...a.scorers.home, ...a.scorers.away].filter(p => p.p1 >= 0.3).sort((x, y) => y.p1 - x.p1).slice(0, 2).map(p => {
       const pen = ['home', 'away'].map(s => penInfo(m, s)).some(x => x && x.main && lastName(x.main.name) === lastName(p.name));
-      return { m, tip: { label: `${p.name} buteur (${p.team})`, p: p.p1 }, reasons: [`${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} matchs` : ''}${p.status === 'titulaire' ? ' · titulaire ✓' : ''}${pen ? ' · 🎯 tire les penalties' : ''}`] };
+      return { label: `${p.name} buteur`, p: p.p1, info: `${p.team} · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} match${p.played > 1 ? 's' : ''}` : ''}${p.status === 'titulaire' ? ' · titulaire ✓' : ''}${pen ? ' · 🎯 penalties' : ''}` };
     });
-  // Buteur double chance : « X ou Y marque » (les deux meilleurs buteurs présents du match)
-  const duos = list.filter(m => m.status === 'NS' && state.analyses[m.id])
-    .map(m => { const t = state.analyses[m.id].tips.find(x => x.key === 'SCD'); return t ? { m, tip: { label: `🎲 ${t.label}`, p: t.p }, reasons: ['buteur double chance'] } : null; })
-    .filter(Boolean).sort((x, y) => y.tip.p - x.tip.p).slice(0, 4);
-  scorers.push(...duos);
-  scorers.sort(byTime);
+    const duo = a.tips.find(x => x.key === 'SCD');
+    const options = [...singles, ...(duo ? [{ label: `🎲 ${duo.label}`, p: duo.p, info: 'double chance : un des deux suffit' }] : [])];
+    return options.length ? { m, options, best: Math.max(...options.map(o => o.p)), tip: { p: 1 } } : null;
+  }).filter(Boolean).sort((x, y) => y.best - x.best).slice(0, 8).sort(byTime);
 
-  // Les trois cartes restent toujours visibles, avec un message quand il n'y a rien de solide
+  // Les cartes restent toujours visibles, avec un message quand il n'y a rien de solide
   const cards = [
-    slot ? { title: `⏰ Meilleur créneau : ${hhmmFr(slot.start)}`, rule: `Le plus de matchs analysés à la même heure. À jouer vers ${hhmmFr(slot.betAt)}, quand les compos sont connues (${slot.official}/${slot.count} officielles).`, sel: [...slot.legs].sort(byTime), best: true }
-      : { title: '⏰ Meilleur créneau', rule: 'Le plus de matchs analysés à la même heure, à jouer 15 min avant avec les compos.', sel: [], empty: 'Pas de créneau avec au moins 2 pistes solides pour la suite de la journée.' },
-    { title: '🏠 Spécial domicile', rule: 'Favoris à domicile solides chez eux, face à un adversaire pas plus fort, sans absent clé ni fatigue de coupe d\'Europe.', sel: home, empty: 'Aucun favori à domicile assez solide pour la suite de la journée.' },
-    { title: '⚽ Buteurs', rule: 'À jouer en simple, pas en combiné. 🎲 = buteur double chance (« X ou Y marque »). Cote juste ≈ 1 ÷ probabilité (30 % → 3,3).', sel: scorers, single: true, empty: 'Aucun buteur à 30 % ou plus pour la suite de la journée.' },
+    { id: 'fav', title: '🛡️ Favoris du jour', rule: 'Avant même les compos : les favoris qui devraient gagner sauf surprise (60 % et plus), sans buteur clé absent ni fatigue de coupe d\'Europe, face à un adversaire pas plus fort. Retirez ceux que vous ne sentez pas avec ✕.', sel: favLegs(list), best: true, empty: 'Aucun favori assez sûr pour la suite de la journée.' },
+    { id: 'dom', title: '🏠 Spécial domicile', rule: 'Les victoires à domicile de 55 à 90 %, avec les mêmes contrôles (absents, fatigue, niveau de l\'adversaire).', sel: homeLegs(list), empty: 'Aucun favori à domicile assez solide pour la suite de la journée.' },
+    { id: 'perso', title: '✍️ Mon combiné perso', rule: 'Vos propres choix : ajoutez un match avec le bouton « ＋ Combiné » de sa fiche (ou ＋ à côté d\'une piste).', sel: persoLegs(), empty: 'Vide pour l\'instant : touchez « ＋ Combiné » sur les matchs de votre choix.' },
+    slot ? { id: 'slot', title: `⏰ Meilleur créneau : ${hhmmFr(slot.start)}`, rule: `Le plus de matchs analysés à la même heure. À jouer vers ${hhmmFr(slot.betAt)}, quand les compos sont connues (${slot.official}/${slot.count} officielles).`, sel: [...slot.legs].sort(byTime) }
+      : { id: 'slot', title: '⏰ Meilleur créneau', rule: 'Le plus de matchs analysés à la même heure, à jouer 15 min avant avec les compos.', sel: [], empty: 'Pas de créneau avec au moins 2 pistes solides pour la suite de la journée.' },
+    { id: 'but', title: '⚽ Buteurs, match par match', rule: 'À jouer en simple, pas en combiné. Choisissez UNE option par match. 🎲 = buteur double chance (« X ou Y marque »). Cote juste ≈ 1 ÷ probabilité (30 % → 3,3).', sel: scorers, single: true, grouped: true, empty: 'Aucun buteur à 30 % ou plus pour la suite de la journée.' },
   ];
 
   const card = c => {
-    if (!c.sel.length) return `<div class="combo-card empty"><div class="combo-card-head"><b>${c.title}</b><span class="small muted">${esc(c.rule)}</span></div><p class="small muted">${esc(c.empty)}</p></div>`;
-    const p = c.sel.reduce((acc, x) => acc * x.tip.p, 1);
+    const off = new Set(c.perso || c.single ? [] : dropped[c.id] || []);
+    const active = c.sel.filter(x => !off.has(x.m.id)), removed = c.sel.length - active.length;
+    const head = `<div class="combo-card-head"><b>${c.title}</b><span class="small muted">${esc(c.rule)}</span></div>`;
+    if (!c.sel.length) return `<div class="combo-card empty">${head}<p class="small muted">${esc(c.empty)}</p></div>`;
+    if (c.grouped) {
+      return `<div class="combo-card">${head}
+        <ul class="combo-mini grouped">${c.sel.map(x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span>
+          ${x.options.map(o => `<span class="opt"><span><b>${esc(o.label)}</b><small> · ${esc(o.info)}</small></span><b>${pct(o.p)}</b></span>`).join('')}</span></li>`).join('')}</ul>
+      </div>`;
+    }
+    const p = active.reduce((acc, x) => acc * x.tip.p, 1);
+    const oddAll = active.length && active.every(x => x.tip.odd) ? active.reduce((acc, x) => acc * x.tip.odd, 1) : null;
+    const dropBtn = x => c.single ? '' : c.id === 'perso'
+      ? `<button class="drop" data-act="perso-del" data-mid="${esc(x.m.id)}" data-key="${esc(x.tip.key)}" aria-label="Retirer de mon combiné">✕</button>`
+      : `<button class="drop" data-act="drop" data-combo="${c.id}" data-mid="${esc(x.m.id)}" aria-label="Retirer du combiné">✕</button>`;
     return `<div class="combo-card${c.best ? ' best' : ''}">
-      <div class="combo-card-head"><b>${c.title}</b><span class="small muted">${esc(c.rule)}</span></div>
-      <ul class="combo-mini">${c.sel.map(x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span><small><b>${esc(x.tip.label)}</b>${x.tip.odd ? ` · cote ${x.tip.odd.toFixed(2).replace('.', ',')}` : ''}${x.reasons && x.reasons.length ? ' · ' + esc(x.reasons.join(' · ')) : ''}</small></span><b>${pct(x.tip.p)}</b></li>`).join('')}</ul>
-      ${c.single ? '' : `<div class="combo-total"><span>${c.sel.length} sélections · <b>${p >= 0.01 ? pct(p) : '< 1 %'}</b></span><span>cote ≈ <b>${(1 / p).toFixed(1).replace('.', ',')}</b></span></div>`}
+      ${head}
+      <ul class="combo-mini">${active.map(x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span><small><b>${esc(x.tip.label)}</b>${x.tip.odd ? ` · cote ${x.tip.odd.toFixed(2).replace('.', ',')}` : ''}${x.reasons && x.reasons.length ? ' · ' + esc(x.reasons.join(' · ')) : ''}</small></span><b>${pct(x.tip.p)}</b>${dropBtn(x)}</li>`).join('')}</ul>
+      ${removed ? `<p class="small muted">${removed} sélection${removed > 1 ? 's' : ''} retirée${removed > 1 ? 's' : ''} · <button class="link" data-act="undrop" data-combo="${c.id}">↺ tout remettre</button></p>` : ''}
+      ${c.single || !active.length ? '' : `<div class="combo-total"><span>${active.length} sélection${active.length > 1 ? 's' : ''} · <b>${p >= 0.01 ? pct(p) : '< 1 %'}</b></span><span>${oddAll ? `cote bookmaker ≈ <b>${oddAll.toFixed(1).replace('.', ',')}</b>` : `cote juste ≈ <b>${(1 / p).toFixed(1).replace('.', ',')}</b>`}</span></div>`}
     </div>`;
   };
   return `<section class="combos">
     <div class="top-head"><h2>🎯 Combinés</h2></div>
     <div class="combo-grid">${cards.map(card).join('')}</div>
-    <p class="small muted">Les probabilités se multiplient : plus le combiné est long, plus le gain est gros et plus les chances sont faibles.</p>
+    <p class="small muted">Les probabilités se multiplient : plus le combiné est long, plus le gain est gros et plus les chances sont faibles. Vos retraits et votre combiné perso restent sur ce téléphone jusqu'à minuit.</p>
   </section>`;
 }
 
@@ -351,6 +409,20 @@ $('#match-list').addEventListener('click', e => {
   if (b.dataset.act === 'copyfav') { copyFavPrompt(b); return; }
   if (b.dataset.act === 'past') { showPast = !showPast; renderMatches(); return; }
   if (b.dataset.act === 'fav') { toggleFav(b.closest('.card').dataset.id); renderMatches(); return; }
+  // Combinés : retirer / remettre une sélection, combiné perso
+  if (b.dataset.act === 'drop') { const c = b.dataset.combo; dropped[c] = [...new Set([...(dropped[c] || []), b.dataset.mid])]; saveDropped(); renderMatches(); return; }
+  if (b.dataset.act === 'undrop') { delete dropped[b.dataset.combo]; saveDropped(); renderMatches(); return; }
+  if (b.dataset.act === 'perso-del') { perso = perso.filter(x => !(x.id === b.dataset.mid && x.key === b.dataset.key)); savePerso(); renderMatches(); return; }
+  if (b.dataset.act === 'perso') {
+    const m = state.matches.find(x => x.id === b.closest('.card').dataset.id), a = m && state.analyses[m.id];
+    if (!m || !a) return;
+    // Piste précise (bouton ＋ d'une piste), sinon la meilleure piste du match, sinon la victoire du favori
+    const main = a.verdict.code === 'skip' ? null : a.tips.filter(x => !String(x.key).startsWith('SC')).sort((x, y) => y.p - x.p)[0];
+    const t = (b.dataset.key && a.tips.find(x => x.key === b.dataset.key)) || main
+      || (a.p.home >= a.p.away ? { key: '1', label: `Victoire ${m.home.name}`, p: a.p.home } : { key: '2', label: `Victoire ${m.away.name}`, p: a.p.away });
+    if (!b.dataset.key && inPerso(m.id)) { perso = perso.filter(x => x.id !== m.id); savePerso(); } else togglePerso(m, t);
+    renderMatches(); return;
+  }
   if (b.dataset.act === 'why') {
     const id = b.closest('.card').dataset.id, f = b.dataset.flag;
     whyOpen.get(id) === f ? whyOpen.delete(id) : whyOpen.set(id, f);
@@ -451,8 +523,9 @@ function keyInfo(m, a) {
   }
   // Turn-over (compo officielle comparée au dernier match) et fatigue (coupe d'Europe, peu de repos)
   for (const side of ['home', 'away']) {
-    const r = a.presence[side].rotation, f = m.fatigue && m.fatigue[side];
-    if (r && r.changes >= 4) out.unshift({ k: 'bad', t: `🔄 Gros turn-over chez ${m[side].name} : ${r.changes} changements par rapport au dernier match (sortis : ${r.out.slice(0, 4).join(', ')}${r.out.length > 4 ? '…' : ''})` });
+    const f = m.fatigue && m.fatigue[side];
+    const rot = rotationText(m, a.presence[side], side);
+    if (rot) out.unshift({ k: rot.level === 'bad' ? 'bad' : '', t: rot.long });
     if (f && f.euro && f.rest != null && f.rest <= 4) out.push({ k: 'bad', t: `😓 ${m[side].name} fatigué : ${f.euro.comp}${f.euro.away ? ' à l\'extérieur' : ''} il y a ${f.rest} jour${f.rest > 1 ? 's' : ''}` });
     else if (f && f.rest != null && f.rest <= 2) out.push({ k: 'bad', t: `😓 ${m[side].name} : seulement ${f.rest} jour${f.rest > 1 ? 's' : ''} de repos` });
   }
@@ -518,7 +591,8 @@ function compactHtml(m) {
   const fl = flagsHtml(m, a, 3);
   const chips = done ? '' : compos + fl.chips;
   const infos = done ? [] : keyInfo(m, a);
-  const favBtn = `<button class="fav-btn${favs.has(m.id) ? ' on' : ''}" data-act="fav" aria-pressed="${favs.has(m.id)}">${favs.has(m.id) ? '★ Favori' : '☆ Favori'}</button>`;
+  const favBtn = `<button class="fav-btn${favs.has(m.id) ? ' on' : ''}" data-act="fav" aria-pressed="${favs.has(m.id)}">${favs.has(m.id) ? '★ Favori' : '☆ Favori'}</button>`
+    + (done ? '' : `<button class="fav-btn combo-btn${inPerso(m.id) ? ' on' : ''}" data-act="perso" aria-pressed="${inPerso(m.id)}">${inPerso(m.id) ? '✓ Combiné' : '＋ Combiné'}</button>`);
   return `<article class="card compact v-${v.code}${done ? ' is-done' : ''}${state.hidden.has(m.id) ? ' is-hidden' : ''}" data-id="${esc(m.id)}">
     <button class="compact-main" data-act="open" aria-label="Ouvrir la fiche du match">
       <span class="c-time">${time}</span>
@@ -576,7 +650,7 @@ function cardHtml(m) {
       </div>
       <div>
         <div class="tips-title">🎯 À jouer</div>
-        <ul class="tips">${tips.length ? tips.map(t => `<li class="${t.edge > 0.06 ? 'value' : ''}"><span>${esc(t.label)}${t.odd ? ` <span class="muted">· cote ${odd(t.odd)}</span>` : ''}${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}<small class="why">${esc(tipWhy(t, m, a))}</small></span><b>${pct(t.p)}</b></li>`).join('') : '<li class="empty">Rien de solide sur ce match.</li>'}</ul>
+        <ul class="tips">${tips.length ? tips.map(t => `<li class="${t.edge > 0.06 ? 'value' : ''}"><span>${esc(t.label)}${t.odd ? ` <span class="muted">· cote ${odd(t.odd)}</span>` : ''}${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}<small class="why">${esc(tipWhy(t, m, a))}</small></span><b>${pct(t.p)}</b>${t.key === 'SC2' ? '' : `<button class="tip-add${inPerso(m.id, t.key) ? ' on' : ''}" data-act="perso" data-key="${esc(t.key)}" aria-label="Ajouter à mon combiné">${inPerso(m.id, t.key) ? '✓' : '＋'}</button>`}</li>`).join('') : '<li class="empty">Rien de solide sur ce match.</li>'}</ul>
       </div>
     </div>
     ${infos.length ? `<div class="card-infos">${alertBoxHtml(infos)}${goodInfosHtml(infos)}</div>` : ''}
@@ -757,7 +831,8 @@ function detailHtml(m, a) {
   const notes = (m.notes || []).length ? `<hr class="soft">${m.notes.map(t => `<p>${esc(t)}</p>`).join('')}` : '';
 
   // Compositions et absents
-  const absList = side => ((m.injuries && m.injuries[side]) || []).map(i => `${i.name} (${reasonFr(i.reason) || 'absent'})`);
+  const hm = t => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  const absList = side => ((m.injuries && m.injuries[side]) || []).map(i => `${i.name} (${reasonFr(i.reason) || 'absent'}${i.src ? ` · ${i.src}` : ''})`);
   const lineup = side => {
     const l = m.lineups && m.lineups[side];
     const r = a.presence[side].rotation;
@@ -769,6 +844,7 @@ function detailHtml(m, a) {
   const composBody = `${official ? `<p class="ok-line">✓ Analyse recalculée avec les compositions officielles${lu.source ? ` (${esc(lu.source)}${lu.at ? `, ${time(lu.at)}` : ''})` : ''}.</p>` : '<p class="muted small">Pas encore officielles : l\'analyse sera recalculée automatiquement dès leur sortie (à partir d\'1 h avant).</p>'}
     ${absList('home').length ? `<p class="small"><b>Absents ${esc(H)} :</b> ${esc(absList('home').join(', '))}</p>` : ''}
     ${absList('away').length ? `<p class="small"><b>Absents ${esc(A)} :</b> ${esc(absList('away').join(', '))}</p>` : ''}
+    <p class="small muted">${m.injChecked ? `Absents vérifiés à ${hm(m.injChecked)} (API-Football), puis revérifiés 3 h et 1 h avant le match.` : 'Absents pas encore vérifiés : revérification automatique 3 h et 1 h avant le match.'} À la sortie des compos, tout titulaire habituel manquant est signalé, quel que soit son poste.</p>
     <div class="lineups">${lineup('home')}${lineup('away')}</div>`;
 
   // Buteurs et probabilités
@@ -783,10 +859,10 @@ function detailHtml(m, a) {
   const pensHtml = pens.length ? `<ul class="c-infos flat">${pens.map(p => `<li class="${p.k}">${esc(p.t)}</li>`).join('')}</ul>` : '<p class="small muted">Tireurs de penalty pas encore connus pour ces équipes.</p>';
   return `
   <div class="detail">
-    ${scorers.length || pens.length ? sec('⚽ Buteurs et tireurs de penalty', `${pensHtml}<ul class="play-list">${scorers.map(p => `<li><div><b>${esc(p.name)}${takers.has(lastName(p.name)) ? ' 🎯' : ''}</b><span class="muted small">${esc(p.team)} · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} matchs` : ''} · ${{ titulaire: 'titulaire ✓', remplacant: 'sur le banc', incertain: 'incertain', probable: 'compo pas encore connue' }[p.status] || ''}${p.p2 >= 0.1 ? ` · doublé ${pct(p.p2)}` : ''}</span></div><b class="p">${pct(p.p1)}</b></li>`).join('')}</ul>`) : ''}
+    ${scorers.length || pens.length ? sec('⚽ Buteurs et tireurs de penalty', `${pensHtml}<ul class="play-list">${scorers.map(p => `<li><div><b>${esc(p.name)}${takers.has(lastName(p.name)) ? ' 🎯' : ''}</b><span class="muted small">${esc(p.team)} · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} match${p.played > 1 ? 's' : ''}` : ''} · ${{ titulaire: 'titulaire ✓', remplacant: 'sur le banc', incertain: 'incertain', probable: 'compo pas encore connue' }[p.status] || ''}${p.p2 >= 0.1 ? ` · doublé ${pct(p.p2)}` : ''}</span></div><b class="p">${pct(p.p1)}</b></li>`).join('')}</ul>`) : ''}
     ${sec(`👥 Compositions et absents${official ? ' <span class="chip ok">officielles</span>' : ''}`, composBody)}
     ${sec('📈 Forme, niveau des adversaires, fatigue', formBody + notes)}
-    ${sec('🔢 Toutes les probabilités', `${bookLine}${easy}<table>${a.markets.map(x => `<tr><td>${esc(x.label)}</td><td class="num">${pct(x.p)}</td></tr>`).join('')}</table>`)}
+    ${sec('🔢 Probabilités (40 % et plus)', `${bookLine}${easy}<table>${a.markets.filter(x => x.p >= 0.4).sort((x, y) => y.p - x.p).map(x => `<tr><td>${esc(x.label)}</td><td class="num">${pct(x.p)}</td></tr>`).join('')}</table>`)}
     ${m.h2h && m.h2h.length ? sec('🤝 Confrontations directes', `<table>${m.h2h.map(g => `<tr><td class="small muted">${new Date(g.date).toLocaleDateString('fr-FR')}</td><td>${esc(g.home)} – ${esc(g.away)}</td><td class="num"><b>${esc(g.score)}</b></td></tr>`).join('')}</table>`) : ''}
   </div>`;
 }
@@ -816,6 +892,9 @@ function renderResults() {
   const byComp = {};
   b.days.forEach(d => d.matches.forEach(m => m.picks.forEach(p => { const c = byComp[m.comp] = byComp[m.comp] || { n: 0, ok: 0 }; c.n++; if (p.ok) c.ok++; })));
   const rateCell = (o, n) => `<td class="num">${n}</td><td class="num"><b class="${o / n >= 0.55 ? 'good' : o / n < 0.45 ? 'bad' : ''}">${pct(o / n)}</b></td>`;
+  // Paris buteur (suivis à part depuis le 20/10)
+  const scAll = b.days.flatMap(d => d.matches.flatMap(m => m.scorerPicks || []));
+  const scOk = scAll.filter(p => p.ok).length, scDuo = scAll.filter(p => p.key === 'SCD');
   // Causes des échecs (classées par le robot depuis le 20/10)
   const CAUSE = { rouge: ['🟥', 'carton rouge'], compo: ['👥', 'compo'], malchance: ['🍀', 'malchance'], stats: ['📊', 'erreur de stats'] };
   const causes = {};
@@ -828,6 +907,7 @@ function renderResults() {
       <div class="stat"><b>${pct(ok / all.length)}</b><span>pistes réussies (${ok}/${all.length})</span></div>
       <div class="stat"><b>${top.n ? pct(top.ok / top.n) : '–'}</b><span>réussite du top du jour${top.n ? ` (${top.ok}/${top.n})` : ''}</span></div>
       <div class="stat"><b>${b.days.length}</b><span>jour${b.days.length > 1 ? 's' : ''} suivis</span></div>
+      ${scAll.length ? `<div class="stat"><b>${pct(scOk / scAll.length)}</b><span>paris buteur réussis (${scOk}/${scAll.length})${scDuo.length ? ` · dont double chance ${scDuo.filter(p => p.ok).length}/${scDuo.length}` : ''}</span></div>` : ''}
     </div>
     ${causeHtml}
     <div class="rank-grid">
@@ -839,7 +919,7 @@ function renderResults() {
     </div>
     ${b.days.slice(0, 7).map(d => `<div class="box day"><h4>${new Date(d.date + 'T12:00:00').toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' })}</h4>
       ${d.matches.map(m => `<div class="res-match"><div><b>${esc(m.home)} ${esc(m.score)} ${esc(m.away)}</b> <span class="muted small">${esc(m.comp)} · attendu ${esc(m.exp)}${m.top ? ' · TOP' : ''}</span>${m.cause && CAUSE[m.cause] ? ` <span class="chip">${CAUSE[m.cause][0]} ${CAUSE[m.cause][1]}</span>` : ''}</div>
-        <ul>${m.picks.map(p => `<li class="${p.ok ? 'ok' : 'ko'}">${p.ok ? '✓' : '✗'} ${esc(p.label)} <span class="muted">(${pct(p.p)})</span>${p.why ? `<div class="small muted">Pourquoi : ${esc(p.why)}</div>` : ''}</li>`).join('')}</ul></div>`).join('')}
+        <ul>${m.picks.map(p => `<li class="${p.ok ? 'ok' : 'ko'}">${p.ok ? '✓' : '✗'} ${esc(p.label)} <span class="muted">(${pct(p.p)})</span>${p.why ? `<div class="small muted">Pourquoi : ${esc(p.why)}</div>` : ''}</li>`).join('')}${(m.scorerPicks || []).map(p => `<li class="${p.ok ? 'ok' : 'ko'}">${p.ok ? '✓' : '✗'} ⚽ ${esc(p.label)} <span class="muted">(${pct(p.p)})</span></li>`).join('')}</ul>${m.scorers && m.scorers.length ? `<div class="small muted">Buteurs : ${esc(m.scorers.join(', '))}</div>` : ''}</div>`).join('')}
     </div>`).join('')}
     <p class="small muted">Le robot retient, pour chaque équipe, l'écart entre les buts attendus et les buts réels sur ses 10 derniers matchs suivis, et corrige ses prochaines analyses (±15 % au maximum).</p>`;
 }

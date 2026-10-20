@@ -383,3 +383,16 @@ tr.value td { background: var(--value-soft); }
 .filters { margin-bottom: 8px; }
 .filters > summary { cursor: pointer; font-size: 13.5px; font-weight: 600; color: var(--muted); padding: 6px 0; }
 .filters[open] > summary { margin-bottom: 6px; }
+/* Combinés : retirer une sélection, combiné perso */
+.combo-mini li { position: relative; }
+.combo-mini li:has(.drop) { grid-template-columns: auto 1fr auto auto; }
+.combo-mini .drop { flex: none; margin-left: 6px; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--muted); font-size: 12px; cursor: pointer; line-height: 1; }
+.combo-mini .drop:hover { color: var(--bad); border-color: var(--bad); }
+.combo-btn.on { background: var(--value-soft); color: var(--value); border-color: transparent; }
+.tip-add { flex: none; margin-left: 8px; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--accent); font-weight: 700; cursor: pointer; }
+.tip-add.on { background: var(--value-soft); color: var(--value); border-color: transparent; }
+/* Buteurs regroupés par match */
+.combo-mini.grouped li { grid-template-columns: auto 1fr; align-items: start; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.combo-mini.grouped li:last-child { border-bottom: 0; }
+.combo-mini .opt { display: flex; justify-content: space-between; gap: 8px; font-size: 12.5px; margin-top: 3px; }
+.combo-mini .opt > b { color: var(--value); white-space: nowrap; }

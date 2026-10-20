@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeMatch } from '../docs/js/model.js';
 import { compByAf } from '../docs/js/config.js';
-import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnScorers, espnStartersOf, espnRedCards, failCause, espnPenalties, penTakers, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot, FDCOUK_CODES, fdcoukCompetition, fdcoukForMatch, fdcoukUpcomingOdds } from '../docs/js/core.js';
+import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnScorers, espnStartersOf, espnRedCards, espnGoalScorers, scorerTipResult, failCause, espnPenalties, penTakers, espnStartersWithLine, espnSquad, rotationText, similarity, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot, FDCOUK_CODES, fdcoukCompetition, fdcoukForMatch, fdcoukUpcomingOdds } from '../docs/js/core.js';
 
 const AF_KEY = process.env.APIFOOTBALL_KEY;
 const FD_KEY = process.env.FOOTBALLDATA_KEY;
@@ -196,7 +196,7 @@ async function reviewDay(y, bilan) {
       if (!s || s.state !== 'post') continue;
       scores[m.id] = [s.h, s.a];
       // De quoi expliquer un échec : cartons rouges, tirs cadrés, titulaires réels
-      const ctx = { reds: espnRedCards(boards[code], m.home.name, m.away.name), sot: null, xi: null };
+      const ctx = { reds: espnRedCards(boards[code], m.home.name, m.away.name), goals: espnGoalScorers(boards[code], m.home.name, m.away.name), sot: null, xi: null };
       const ids = espnEventTeams(boards[code], m.home.name, m.away.name);
       if (ids) {
         try {
@@ -237,6 +237,11 @@ async function reviewDay(y, bilan) {
       exp: `${an.lh.toFixed(1)}-${an.la.toFixed(1)}`, verdict: an.verdict.label, top: topIds.has(m.id),
       official: !!(m.lineups && m.lineups.home && m.lineups.home.status === 'officielle'), picks,
       cause: cause && picks.some(p => !p.ok) ? cause.k : null,
+      // Paris buteur (comptés à part, pour ne pas mélanger avec la réussite des pistes)
+      scorerPicks: (ctxs[m.id] && ctxs[m.id].goals) ? an.tips.filter(t => ['SC', 'SC2', 'SCD'].includes(t.key))
+        .map(t => ({ key: t.key, label: t.label, p: +t.p.toFixed(3), ok: scorerTipResult(t, ctxs[m.id].goals) }))
+        .filter(p => p.ok !== null) : [],
+      scorers: (ctxs[m.id] && ctxs[m.id].goals) || [],
     });
     // Seuls les matchs « normaux » nourrissent la mémoire : un carton rouge, une compo inconnue
     // ou un match dominé sans réussite fausseraient la correction des équipes
@@ -357,16 +362,23 @@ async function enrichEspn(matches, bilan, today) {
           .filter(ev => ev.competitions && ev.competitions[0].status && ev.competitions[0].status.type.completed)
           .sort((x, y) => Date.parse(y.date) - Date.parse(x.date));
         if (done[0]) lastDate = Date.parse(done[0].date);
-        // Statistiques des 5 derniers matchs (déjà lues = gardées en mémoire)
+        // Statistiques et onze de départ des 5 derniers matchs (déjà lus = gardés en mémoire)
+        mem.xis = mem.xis || [];
         for (const ev of done.slice(0, 5)) {
-          if (mem.perf.some(p => p.ev === ev.id)) continue;
+          const needPerf = !mem.perf.some(p => p.ev === ev.id), needXI = !mem.xis.some(x => x.ev === ev.id);
+          if (!needPerf && !needXI) continue;
           try {
-            const st = espnTeamMatchStats(await espn(`${ESPN_SITE}${code}/summary?event=${ev.id}`), espnId);
+            const sum = await espn(`${ESPN_SITE}${code}/summary?event=${ev.id}`);
+            const st = needPerf && espnTeamMatchStats(sum, espnId);
             if (st) mem.perf.push({ ev: ev.id, date: ev.date, ...st });
+            const xi = needXI && espnStartersWithLine(sum, espnId);
+            if (xi) mem.xis.push({ ev: ev.id, date: ev.date, xi });
           } catch { /* match sans statistiques */ }
           await sleep(100);
         }
         mem.perf = mem.perf.sort((x, y) => Date.parse(x.date) - Date.parse(y.date)).slice(-10);
+        mem.xis = mem.xis.sort((x, y) => Date.parse(y.date) - Date.parse(x.date)).slice(0, 5);
+        if (mem.xis.length >= 3) (m.recentXI = m.recentXI || {})[side] = mem.xis.map(x => x.xi);
         // Onze de départ du dernier match (pour repérer un gros turn-over avec la compo officielle)
         if (done[0] && (!mem.lastXI || mem.lastXI.ev !== done[0].id)) {
           try {
@@ -424,6 +436,9 @@ async function espnFixtures(today) {
 }
 
 // ---------- Collecte du matin ----------
+// Panne d'API-Football le matin (source des absents) : affichée sur la page
+let afError = null;
+
 async function daily(today) {
   let list, afDown = false;
   try {
@@ -431,6 +446,7 @@ async function daily(today) {
     list = fx.response.filter(f => compByAf[f.league.id] && ['TBD', 'NS', 'PST'].includes(f.fixture.status.short));
   } catch (e) {
     console.warn('API-Football indisponible, programme pris sur ESPN :', e.message);
+    afError = e.message;
     list = await espnFixtures(today);
     afDown = true;
   }
@@ -474,8 +490,9 @@ async function daily(today) {
   const withStats = matches.filter(m => m.stats)
     .sort((a, b) => PRIORITY.indexOf(a.comp.af) - PRIORITY.indexOf(b.comp.af) || a.kickoff - b.kickoff);
   for (const m of withStats) {
-    if (afDown || typeof m.fixtureId !== 'number' || afUsed >= 30) break;
-    try { applyInjuries(m, await af('injuries', { fixture: m.fixtureId })); } catch (e) { console.warn(e.message); }
+    if (afDown || afUsed >= 30) break;
+    if (typeof m.fixtureId !== 'number') continue; // match ajouté depuis ESPN : absents revérifiés à H-3 et H-1
+    try { applyInjuries(m, await af('injuries', { fixture: m.fixtureId })); m.injChecked = Date.now(); } catch (e) { console.warn(e.message); }
   }
   return matches;
 }
@@ -534,6 +551,66 @@ async function espnLineups(due) {
   return found;
 }
 
+// ---------- Absents revérifiés 3 h puis 1 h avant chaque match ----------
+// La liste des blessés est souvent en retard (Ligue des champions, forfaits annoncés en conférence de presse) :
+// on la recharge, par paquets de 20 matchs. Les matchs venus du programme ESPN sont d'abord retrouvés
+// dans le programme API-Football du jour (1 requête).
+async function injuriesPass(state) {
+  const now = Date.now();
+  const stage = m => { const mins = (m.kickoff - now) / 60000; return mins <= 70 && mins > 5 ? 'h1' : mins <= 190 && mins > 70 ? 'h3' : null; };
+  const due = state.matches.filter(m => m.stats && stage(m) && !(m.injStages || []).includes(stage(m)));
+  if (!due.length || afUsed >= AF_BUDGET - 5) return false;
+  // Identifiants API-Football des matchs venus d'ESPN
+  if (due.some(m => typeof m.fixtureId !== 'number')) {
+    try {
+      if (!state.afFixtures) {
+        const fx = await af('fixtures', { date: state.date, timezone: 'Europe/Paris' });
+        state.afFixtures = fx.response.filter(f => compByAf[f.league.id]).map(f => ({ id: f.fixture.id, h: f.teams.home.name, a: f.teams.away.name, hid: f.teams.home.id, aid: f.teams.away.id }));
+      }
+      for (const m of due.filter(x => typeof x.fixtureId !== 'number')) {
+        const f = state.afFixtures.find(x => similarity(x.h, m.home.name) >= 0.6 && similarity(x.a, m.away.name) >= 0.6);
+        if (f) { m.afFixture = f.id; m.afTeams = { home: f.hid, away: f.aid }; }
+      }
+      state.afError = null;
+    } catch (e) { state.afError = { at: now, msg: e.message }; console.warn('API-Football toujours indisponible :', e.message); return true; }
+  }
+  const idOf = m => typeof m.fixtureId === 'number' ? m.fixtureId : m.afFixture;
+  const ready = due.filter(idOf);
+  let changed = false;
+  for (let i = 0; i < ready.length; i += 20) {
+    if (afUsed >= AF_BUDGET - 3) break;
+    const chunk = ready.slice(i, i + 20);
+    let resp;
+    try { resp = (await af('injuries', { ids: chunk.map(idOf).join('-') })).response || []; }
+    catch (e) { console.warn('Absents groupés impossibles :', e.message); state.afError = { at: now, msg: e.message }; break; }
+    for (const m of chunk) {
+      const added = applyInjuries(m, { response: resp.filter(x => x.fixture && x.fixture.id === idOf(m)) });
+      m.injStages = [...(m.injStages || []), stage(m)];
+      m.injChecked = now;
+      changed = true;
+      if (added.length) {
+        const title = `Nouvel absent : ${m.home.name} – ${m.away.name}`;
+        const body = added.map(x => `${x.name} (${m[x.side].name}${x.reason ? `, ${x.reason}` : ''})`).join(', ');
+        state.events.unshift({ t: Date.now(), matchId: m.id, level: 'warn', title, body });
+        if (analyzeMatch(m).verdict.code !== 'skip') await notify(title, body);
+      }
+    }
+  }
+  // Matchs sans identifiant API-Football : on note quand même l'étape, pour ne pas réessayer en boucle
+  due.filter(m => !idOf(m)).forEach(m => { m.injStages = [...(m.injStages || []), stage(m)]; changed = true; });
+  return changed;
+}
+
+// Effectif ESPN des deux équipes (poste, matchs joués) dès que les compos sont connues : sert au turn-over
+async function loadSquads(m) {
+  const code = ESPN_CODES[m.comp && m.comp.af];
+  if (!code || !m.espn || m.squad) return;
+  m.squad = {};
+  for (const side of ['home', 'away']) {
+    try { m.squad[side] = espnSquad(await espn(`${ESPN_SITE}${code}/teams/${m.espn[side]}/roster`)); } catch (e) { console.warn('Effectif :', e.message); }
+  }
+}
+
 async function lineupsPass(state) {
   const now = Date.now();
   const isOfficial = m => m.lineups && m.lineups.home && m.lineups.home.status === 'officielle';
@@ -547,15 +624,17 @@ async function lineupsPass(state) {
     console.log(`ESPN : ${f.length}/${dueEspn.length} composition(s) trouvée(s)`);
   }
 
-  const due = state.matches.filter(m => !isOfficial(m) && typeof m.fixtureId === 'number' && inWindow(m, LINEUPS_FROM_MIN, LINEUPS_UNTIL_MIN));
+  // (matchs venus d'ESPN : identifiant API-Football retrouvé par la revérification des absents)
+  const afId = m => typeof m.fixtureId === 'number' ? m.fixtureId : m.afFixture;
+  const due = state.matches.filter(m => !isOfficial(m) && afId(m) && inWindow(m, LINEUPS_FROM_MIN, LINEUPS_UNTIL_MIN));
   if (due.length) console.log(`API-Football : compositions recherchées pour ${due.length} match(s)`);
   for (let i = 0; i < due.length; i += 20) {
     if (afUsed >= AF_BUDGET) break;
     const chunk = due.slice(i, i + 20);
     try {
-      const j = await af('fixtures', { ids: chunk.map(m => m.fixtureId).join('-') });
+      const j = await af('fixtures', { ids: chunk.map(afId).join('-') });
       for (const f of j.response || []) {
-        const m = chunk.find(x => x.fixtureId === f.fixture.id);
+        const m = chunk.find(x => afId(x) === f.fixture.id);
         if (m && applyLineups(m, { response: f.lineups || [] })) found.push(m);
       }
     } catch (e) {
@@ -563,19 +642,22 @@ async function lineupsPass(state) {
       console.warn('Recherche groupée impossible :', e.message);
       for (const m of chunk) {
         if (afUsed >= AF_BUDGET) break;
-        try { if (applyLineups(m, await af('fixtures/lineups', { fixture: m.fixtureId }))) found.push(m); } catch (err) { console.warn(err.message); break; }
+        try { if (applyLineups(m, await af('fixtures/lineups', { fixture: afId(m) }))) found.push(m); } catch (err) { console.warn(err.message); break; }
       }
     }
   }
   console.log(`${found.length} composition(s) trouvée(s)`);
   if (!found.length) return false;
+  // Effectifs (poste, matchs joués) pour décrire le turn-over
+  for (const m of found) await loadSquads(m);
 
   // Une notification par créneau
   for (const slot of groupSlots(found)) {
     const lines = slot.matches.map(m => {
       const a = analyzeMatch(m);
       const benched = [...a.presence.home.missing, ...a.presence.away.missing].filter(p => p.status === 'remplacant' || p.status === 'absent').map(p => p.name);
-      return `${m.home.name}-${m.away.name} : ${bestTip(a)}${benched.length ? ` · absents/banc : ${benched.slice(0, 3).join(', ')}` : ''}`;
+      const rot = ['home', 'away'].map(s => rotationText(m, a.presence[s], s)).filter(r => r && r.level === 'bad').map(r => r.short);
+      return `${m.home.name}-${m.away.name} : ${bestTip(a)}${benched.length ? ` · absents/banc : ${benched.slice(0, 3).join(', ')}` : ''}${rot.length ? ` · ⚠ ${rot.join(' ; ')}` : ''}`;
     });
     const title = `Compos officielles ${hhmm(slot.start)}`;
     const message = lines.join('\n');
@@ -668,7 +750,7 @@ async function main() {
     try { await enrichFdcouk(matches); } catch (e) { console.warn('xG / marché :', e.message); }
     try { await enrichEspn(matches, bilan, today); } catch (e) { console.warn('Forme / fatigue :', e.message); }
     await fs.writeFile(BILAN_FILE, JSON.stringify(bilan));
-    state = { date: today, generatedAt: new Date().toISOString(), afUsed: 0, matches, events: [] };
+    state = { date: today, generatedAt: new Date().toISOString(), afUsed: 0, matches, events: [], afError: afError ? { at: Date.now(), msg: afError } : null };
     let summary = dailySummary(matches);
     if (review && review.total) summary = `Bilan d'hier : ${review.ok}/${review.total} pistes réussies.\n` + summary;
     state.events.unshift({ t: Date.now(), level: 'info', title: 'Analyse du jour prête', body: summary.replace(/\n/g, ' | ') });
@@ -684,6 +766,7 @@ async function main() {
   } catch (e) { console.warn('Penalties :', e.message); }
   phase = 'compositions et scores en direct';
   const usedBefore = afUsed;
+  try { if (await injuriesPass(state)) changed = true; } catch (e) { console.warn('Absents :', e.message); }
   if (await lineupsPass(state)) changed = true;
   try { if (await livePass(state)) changed = true; } catch (e) { console.warn('Scores en direct :', e.message); }
 

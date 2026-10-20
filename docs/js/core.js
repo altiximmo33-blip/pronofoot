@@ -1,6 +1,7 @@
 // Construction des matchs à partir des données brutes (football-data.org + API-Football).
 // Module pur (pas d'accès réseau ni fichier) : utilisé par le robot et testable dans un navigateur.
-import { teamSplit, norm } from './model.js';
+import { teamSplit, norm, lineOf } from './model.js';
+export { lineOf };
 import { compByAf } from './config.js';
 
 // Compétitions couvertes gratuitement par football-data.org (identifiant API-Football → code)
@@ -58,7 +59,7 @@ const STOP = new Set(['fc', 'afc', 'ac', 'as', 'sc', 'ssc', 'cf', 'club', 'de', 
 const tokens = s => norm(s).split(' ').filter(w => w && !STOP.has(w));
 const KEEP_DISTINCT = ['city', 'united'];
 
-function similarity(a, b) {
+export function similarity(a, b) {
   const ta = tokens(a), tb = tokens(b);
   if (!ta.length || !tb.length) return 0;
   let hit = 0;
@@ -161,13 +162,73 @@ export function buildMatch(f, C) {
 }
 
 // ---------- Absents et compositions (API-Football) ----------
+// Renvoie les nouveaux absents (par rapport à ce qui était déjà connu), pour les alertes
 export function applyInjuries(m, injuriesJson) {
+  // Identifiants API-Football des équipes (différents quand le match vient du programme ESPN)
+  const ids = m.afTeams || { home: m.home.id, away: m.away.id };
   // La source répète parfois un même joueur : on ne le garde qu'une fois
   const seen = new Set();
   const list = (injuriesJson.response || [])
-    .map(x => ({ id: null, name: x.player.name, type: x.player.type, reason: x.player.reason, team: x.team.id }))
+    .map(x => ({ id: null, name: x.player.name, type: x.player.type, reason: x.player.reason, team: x.team.id, src: 'API-Football', at: Date.now() }))
     .filter(x => { const k = x.team + '|' + x.name; if (seen.has(k)) return false; seen.add(k); return true; });
-  m.injuries = { home: list.filter(x => x.team === m.home.id), away: list.filter(x => x.team === m.away.id) };
+  const prev = m.injuries || { home: [], away: [] };
+  m.injuries = { home: list.filter(x => x.team === ids.home), away: list.filter(x => x.team === ids.away) };
+  const added = [];
+  for (const side of ['home', 'away']) {
+    for (const x of m.injuries[side]) {
+      const old = (prev[side] || []).find(p => p.name === x.name);
+      if (old) x.at = old.at || x.at; else added.push({ side, name: x.name, reason: x.reason });
+    }
+  }
+  return added;
+}
+
+// ---------- Postes et turn-over ----------
+export const LINE_NAME = { G: 'gardien', D: 'défense', M: 'milieu', F: 'attaque' };
+
+// Titulaires d'une équipe dans le résumé d'un match joué, avec leur ligne : [{ n, l }]
+export function espnStartersWithLine(summaryJson, espnTeamId) {
+  const r = (summaryJson.rosters || []).find(x => x.team && String(x.team.id) === String(espnTeamId));
+  const xi = r ? (r.roster || []).filter(p => p.starter).map(p => ({ n: (p.athlete && (p.athlete.displayName || p.athlete.fullName)) || '', l: lineOf(p.position && p.position.abbreviation) })) : [];
+  return xi.length >= 11 ? xi : null;
+}
+
+// Effectif ESPN d'une équipe : poste et nombre de matchs joués cette saison
+export function espnSquad(rosterJson) {
+  return (rosterJson.athletes || []).map(a => {
+    const stats = ((a.statistics && a.statistics.splits && a.statistics.splits.categories) || []).flatMap(c => c.stats || []);
+    const apps = stats.find(s => s.name === 'appearances');
+    return { n: a.displayName, l: lineOf(a.position && a.position.abbreviation), apps: apps ? +apps.value || 0 : null };
+  });
+}
+
+// Texte du turn-over d'une équipe (présence calculée par analyzeMatch) : { level: 'bad' | 'info', short, long } ou null
+export function rotationText(m, pres, side) {
+  const r = pres && pres.rotation;
+  if (!r || !r.changes) return null;
+  const team = m[side].name;
+  const who = list => list.map(o => `${o.n}${o.bench ? ' (banc)' : ''}`).join(', ');
+  const def = r.out.filter(o => o.l === 'G' || o.l === 'D'), att = r.out.filter(o => o.l === 'F'), mid = r.out.filter(o => o.l === 'M');
+  const effects = [];
+  if (def.length) effects.push(`${def.length} en défense (${who(def)}) : défense moins rodée, risque de buts encaissés`);
+  if (att.length) effects.push(`${att.length} en attaque (${who(att)}) : peut-être moins de buts`);
+  if (mid.length) effects.push(`${mid.length} au milieu (${who(mid)}) : moins de maîtrise du jeu`);
+  const other = r.out.filter(o => !o.l);
+  if (other.length) effects.push(`${who(other)}`);
+  // Les entrants : peu de matchs cette saison, ou joueurs expérimentés
+  const known = r.inn.filter(x => x.apps != null);
+  const rookies = known.filter(x => x.apps <= 2), pros = known.filter(x => x.apps >= 8);
+  const entrants = [
+    rookies.length ? `entrants peu utilisés : ${rookies.map(x => `${x.n} (${x.apps} match${x.apps > 1 ? 's' : ''} cette saison)`).join(', ')}` : '',
+    pros.length ? `entrants expérimentés : ${pros.map(x => `${x.n} (${x.apps} matchs)`).join(', ')}` : '',
+  ].filter(Boolean).join(' ; ');
+  const base = r.of > 1 ? `titulaires habituels (au moins ${Math.ceil(r.of * 0.6)} des ${r.of} derniers matchs)` : 'titulaires du dernier match';
+  const head = r.changes >= 4 ? `🔄 Gros turn-over chez ${team} : ${r.changes} ${base} absents de la compo` : `🔎 ${team} sans ${r.changes > 1 ? 'des' : 'un de ses'} ${base}`;
+  return {
+    level: r.changes >= 3 || def.length >= 2 || att.length >= 1 ? 'bad' : 'info',
+    short: `${team} : ${r.changes} changement${r.changes > 1 ? 's' : ''}${def.length ? `, ${def.length} en défense` : ''}${att.length ? `, ${att.length} en attaque` : ''}`,
+    long: `${head} : ${effects.join(' ; ')}${entrants ? `. ${entrants[0].toUpperCase() + entrants.slice(1)}` : ''}. Source : compo officielle.`,
+  };
 }
 
 export function applyLineups(m, lineupsJson) {
@@ -177,7 +238,8 @@ export function applyLineups(m, lineupsJson) {
     startXI: (l.startXI || []).map(p => ({ id: null, name: p.player.name, pos: p.player.pos })),
     subs: (l.substitutes || []).map(p => ({ id: null, name: p.player.name, pos: p.player.pos })),
   });
-  const h = r.find(l => l.team.id === m.home.id), a = r.find(l => l.team.id === m.away.id);
+  const ids = m.afTeams || { home: m.home.id, away: m.away.id };
+  const h = r.find(l => l.team.id === ids.home), a = r.find(l => l.team.id === ids.away);
   if (h) m.lineups.home = conv(h);
   if (a) m.lineups.away = conv(a);
   return !!(h && a);
@@ -524,6 +586,26 @@ export function espnRedCards(scoreboardJson, homeName, awayName) {
     side: String(d.team && d.team.id) === homeId ? 'home' : 'away',
     min: parseInt((d.clock && d.clock.displayValue) || '0', 10) || 0,
   }));
+}
+
+// Buteurs d'un match terminé (hors contre-son-camp et tirs au but), d'après le programme ESPN ; null si match introuvable
+export function espnGoalScorers(scoreboardJson, homeName, awayName) {
+  const id = espnFindEvent(scoreboardJson, homeName, awayName);
+  if (!id) return null;
+  const c = (scoreboardJson.events || []).find(e => e.id === id).competitions[0];
+  return (c.details || [])
+    .filter(d => d.scoringPlay && !d.shootout && !d.ownGoal && !/own goal/i.test((d.type && d.type.text) || ''))
+    .map(d => (d.athletesInvolved && d.athletesInvolved[0] && d.athletesInvolved[0].displayName) || '')
+    .filter(Boolean);
+}
+// Pari buteur gagné ? (SC : le joueur marque ; SC2 : doublé ; SCD : l'un des deux marque)
+export function scorerTipResult(tip, scorers) {
+  const key = n => norm(n).split(' ').pop();
+  const goals = n => scorers.filter(s => key(s) === key(n)).length;
+  if (tip.key === 'SC' && tip.player) return goals(tip.player) >= 1;
+  if (tip.key === 'SC2' && tip.player) return goals(tip.player) >= 2;
+  if (tip.key === 'SCD' && tip.duo) return tip.duo.some(p => goals(p.name) >= 1);
+  return null;
 }
 
 const RESULT_HOME = ['1', 'H2+', '1O25', '1BTTS', '1CS'], RESULT_AWAY = ['2', 'A2+', '2O25', '2BTTS', '2CS'];
