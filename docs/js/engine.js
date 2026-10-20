@@ -127,7 +127,10 @@ function buildBanner() {
   }
   // Source des absents en panne : prudence sur les compos tant qu'elles ne sont pas officielles
   if (d.afError && d.date === parisToday()) {
-    state.bannerHtml += `${state.bannerHtml ? '<br>' : ''}<strong>⚠ Absents non vérifiés :</strong> la source des blessés et suspendus (API-Football) ne répond pas depuis ${new Date(d.afError.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}. Le robot réessaie 3 h et 1 h avant chaque match ; à la sortie des compos, tout titulaire habituel manquant sera signalé.`;
+    const suspended = /suspend/i.test(d.afError.msg || '');
+    state.bannerHtml += `${state.bannerHtml ? '<br>' : ''}<strong>⚠ Absents non vérifiés :</strong> ${suspended
+      ? 'votre compte API-Football (source des blessés et suspendus) est <b>suspendu</b>. À régler sur dashboard.api-football.com.'
+      : `la source des blessés et suspendus (API-Football) ne répond pas depuis ${new Date(d.afError.at).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}. Le robot réessaie 3 h et 1 h avant chaque match.`} À la sortie des compos, tout titulaire habituel manquant sera quand même signalé.`;
   }
   // Le robot a rencontré un problème récemment
   const st = state.robotStatus;

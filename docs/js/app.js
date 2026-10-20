@@ -2,7 +2,7 @@ import { COMPETITIONS } from './config.js';
 import * as E from './engine.js';
 const { state, onChange, start, loadAll, toggleHidden, clearAlerts, saveSettings, testKeys } = E;
 import { load, save } from './store.js';
-import { topPicks, tipResult, bestSlot, rotationText } from './core.js';
+import { topPicks, tipResult, bestSlot, rotationText, levelGap, statGames } from './core.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -54,6 +54,7 @@ $('#btn-notify').addEventListener('click', async () => {
 function render() {
   const s = state.settings;
   $('#demo-banner').hidden = !state.bannerHtml;
+  $('#demo-banner').style.display = state.bannerHtml ? '' : 'none';
   $('#demo-banner').innerHTML = state.bannerHtml || '';
   $('#error').hidden = !state.error;
   $('#error').textContent = state.error ? 'Erreur de chargement : ' + state.error : '';
@@ -228,6 +229,15 @@ function favReasons(m, side) {
   const other = side === 'home' ? 'away' : 'home';
   const ts = m.teamStats || {}, me = ts[side] && ts[side][side], opp = ts[other] && ts[other][other];
   const r = [];
+  // Coupe : niveau des deux équipes dans leur championnat, plutôt que les 1 ou 2 matchs de la compétition
+  if (m.level) {
+    const lv = L => `${L.league}${L.rank ? `, ${L.rank}${L.rank === 1 ? 'er' : 'e'}` : ''}`, g = levelGap(m);
+    r.push(lv(m.level[side]), `${m[other].name} : ${lv(m.level[other])}`);
+    if (g) r.push(g.size === 'faible' ? '⚠ niveau proche' : `écart ${g.size}`);
+    const inj = (m.injuries && m.injuries[side]) || [];
+    r.push(m.injChecked ? (inj.length ? `${inj.length} absent${inj.length > 1 ? 's' : ''} (aucun buteur clé)` : '✓ pas d\'absent signalé') : '⚠ absents pas encore vérifiés');
+    return r;
+  }
   if (me && me.p && me.w != null) r.push(`${me.w}/${me.p} victoires ${side === 'home' ? 'à domicile' : 'à l\'extérieur'}`);
   if (opp && opp.p && opp.w != null) r.push(`${m[other].name} ${opp.w}/${opp.p} ${other === 'home' ? 'à domicile' : 'à l\'extérieur'}`);
   const f = m.form && m.form[side];
@@ -240,15 +250,20 @@ function favReasons(m, side) {
 // Peut-on compter sur ce favori ? Pas de buteur clé absent, pas de fatigue de coupe d'Europe, adversaire pas plus fort
 function solidFav(m, a, side) {
   const other = side === 'home' ? 'away' : 'home';
-  const tF = m.tiers && TIER_RANK[m.tiers[side]], tO = m.tiers && TIER_RANK[m.tiers[other]];
-  if (tF && tO && tF < tO) return false;
+  // Coupe : niveau du championnat de chaque équipe ; sinon niveau dans le classement de la compétition
+  if (m.level) { if (m.level[side].S < m.level[other].S) return false; }
+  else {
+    const tF = m.tiers && TIER_RANK[m.tiers[side]], tO = m.tiers && TIER_RANK[m.tiers[other]];
+    if (tF && tO && tF < tO) return false;
+  }
   if (a.presence[side].players.some(x => x.status === 'absent' && x.share >= 0.15)) return false;
   const rot = a.presence[side].rotation;
   if (rot && rot.changes >= 4) return false;
   const f = m.fatigue && m.fatigue[side];
   return !(f && f.euro && f.rest != null && f.rest <= 3);
 }
-const usable = m => m.status === 'NS' && m.stats && state.analyses[m.id] && Math.min(m.stats.home.p, m.stats.away.p) >= 4;
+// Assez de matchs pour se fier aux stats (en coupe, le niveau du championnat compense un peu le petit nombre)
+const usable = m => m.status === 'NS' && m.stats && state.analyses[m.id] && statGames(m) >= (m.level ? 3 : 4);
 
 // 🛡️ Favoris du jour : tous les favoris qui devraient gagner sauf surprise (60 % et plus), même avant les compos
 function favLegs(list) {
@@ -523,6 +538,8 @@ function keyInfo(m, a) {
   }
   // Turn-over (compo officielle comparée au dernier match) et fatigue (coupe d'Europe, peu de repos)
   for (const side of ['home', 'away']) {
+    // Coupe : écart de niveau entre les deux équipes (une seule fois, en tête)
+    if (side === 'home') { const g = levelGap(m); if (g) out.unshift({ k: g.warn ? 'bad' : '', t: g.text }); }
     const f = m.fatigue && m.fatigue[side];
     const rot = rotationText(m, a.presence[side], side);
     if (rot) out.unshift({ k: rot.level === 'bad' ? 'bad' : '', t: rot.long });
@@ -701,7 +718,10 @@ function compareHtml(m, a) {
   const src = a.sources || {};
   const srcList = [src.goals && 'buts réels', src.xg && 'xG', (src.market || a.marketNow) && 'cotes des bookmakers'].filter(Boolean);
   const nH = H_ && H_.home ? H_.home.p : 0, nA = A_ && A_.away ? A_.away.p : 0;
-  const reliab = `Basé sur ${nH} match${nH > 1 ? 's' : ''} de ${H} à domicile et ${nA} de ${A} à l'extérieur${srcList.length ? ` · sources : ${srcList.join(', ')}` : ''}.${Math.min(nH, nA) < 4 ? ' <b>Peu de matchs : chiffres encore fragiles.</b>' : ''}`;
+  const champ = !m.level ? '' : m.statsSource === 'championnat'
+    ? ` <b>Match de coupe : chiffres du championnat de chaque équipe (${esc(m.level.home.league)} / ${esc(m.level.away.league)}), corrigés selon l'écart de niveau.</b>`
+    : m.statsSource === 'mixte' ? ` <b>Match de coupe : ces chiffres de la compétition sont mélangés à 50/50 avec ceux du championnat de chaque équipe (${esc(m.level.home.league)} / ${esc(m.level.away.league)}), puis corrigés selon l'écart de niveau.</b>` : '';
+  const reliab = `Basé sur ${nH} match${nH > 1 ? 's' : ''} de ${H} à domicile et ${nA} de ${A} à l'extérieur${srcList.length ? ` · sources : ${srcList.join(', ')}` : ''}.${Math.min(nH, nA) < 4 ? ' <b>Peu de matchs : chiffres encore fragiles.</b>' : ''}${champ}`;
 
   return `<div class="compare">
     <h4 class="sec-title">📊 Les chiffres du match</h4>

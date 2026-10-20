@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeMatch } from '../docs/js/model.js';
 import { compByAf } from '../docs/js/config.js';
-import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnScorers, espnStartersOf, espnRedCards, espnGoalScorers, scorerTipResult, failCause, espnPenalties, penTakers, espnStartersWithLine, espnSquad, rotationText, similarity, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot, FDCOUK_CODES, fdcoukCompetition, fdcoukForMatch, fdcoukUpcomingOdds } from '../docs/js/core.js';
+import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnScorers, espnStartersOf, espnRedCards, espnGoalScorers, scorerTipResult, failCause, espnPenalties, penTakers, espnStartersWithLine, espnSquad, rotationText, similarity, domesticLevel, unknownLevel, levelFactor, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot, FDCOUK_CODES, fdcoukCompetition, fdcoukForMatch, fdcoukUpcomingOdds } from '../docs/js/core.js';
 
 const AF_KEY = process.env.APIFOOTBALL_KEY;
 const FD_KEY = process.env.FOOTBALLDATA_KEY;
@@ -322,6 +322,72 @@ async function enrichFdcouk(matches) {
 const UEFA = { 'uefa.champions': 'Ligue des champions', 'uefa.europa': 'Ligue Europa', 'uefa.europa.conf': 'Ligue Conférence' };
 const ymd = t => new Date(t).toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' }).replace(/-/g, '');
 
+// ---------- Coupes et coupes d'Europe : stats, buteurs et niveau du championnat de chaque équipe ----------
+// En coupe, on n'a que quelques matchs de la compétition : on prend plutôt le bilan domicile / extérieur
+// et les buteurs du championnat de chaque équipe, puis on corrige selon l'écart de niveau (division, pays, classement).
+async function enrichCups(matches, today) {
+  const teamCache = {}, scorersCache = {}, boards = {};
+  const team = async (slug, id) => {
+    const k = slug + '/' + id;
+    if (!(k in teamCache)) { try { teamCache[k] = await espn(`${ESPN_SITE}${slug}/teams/${id}`); } catch { teamCache[k] = null; } }
+    return teamCache[k];
+  };
+  for (const m of matches) {
+    const code = ESPN_CODES[m.comp && m.comp.af];
+    if (!code || !['cup', 'europe'].includes(m.comp.type)) continue;
+    try {
+      if (!m.espn) {
+        const day = ymd(m.kickoff);
+        boards[code + day] = boards[code + day] || await espn(`${ESPN_SITE}${code}/scoreboard?dates=${day}`);
+        const ids = espnEventTeams(boards[code + day], m.home.name, m.away.name);
+        if (!ids) continue;
+        m.espn = { id: ids.id, home: ids.homeId, away: ids.awayId };
+      }
+      const level = {};
+      for (const side of ['home', 'away']) {
+        const first = await team(code, m.espn[side]);
+        const slug = first && first.team && first.team.defaultLeague && first.team.defaultLeague.slug;
+        if (!slug || slug.startsWith('uefa.') || slug === code) continue;
+        const L = domesticLevel(await team(slug, m.espn[side]));
+        if (L) level[side] = L;
+      }
+      if (!level.home && !level.away) continue;
+      // Championnat non couvert par ESPN (Tchéquie, Azerbaïdjan, Slovaquie…) : forcément plus modeste que les grands
+      for (const side of ['home', 'away']) if (!level[side]) level[side] = unknownLevel();
+      m.level = level;
+      // Bilan domicile / extérieur du championnat (si assez de matchs) : mélangé 50/50 avec celui de la compétition,
+      // ou utilisé seul quand la coupe n'a pas de statistiques
+      if (level.home.home.p >= 3 && level.away.away.p >= 3) {
+        const dom = { avgHome: 1.5, avgAway: 1.2, home: level.home.home, away: level.away.away };
+        const split = L => ({ home: L.home, away: L.away, n: null, ranks: {}, avg: { avgHome: 1.5, avgAway: 1.2 } });
+        const domTs = { home: split(level.home), away: split(level.away) };
+        if (m.stats) { m.domStats = dom; m.domTeamStats = domTs; m.statsSource = 'mixte'; }
+        else { m.stats = dom; m.teamStats = domTs; m.statsSource = 'championnat'; }
+      }
+      // Correction selon l'écart de niveau (bornée) : un 2 buts par match en National ne vaut pas 2 buts en Ligue 1
+      const f = levelFactor(level);
+      m.adj = m.adj || { home: 1, away: 1 };
+      m.adj.home *= f; m.adj.away /= f;
+      // Buteurs du championnat de chaque équipe
+      for (const side of ['home', 'away']) {
+        const slug = level[side].slug;
+        if (!slug) continue;
+        if (!(slug in scorersCache)) { try { scorersCache[slug] = espnScorers(await espn(`${ESPN_SITE}${slug}/statistics`)); } catch { scorersCache[slug] = null; } }
+        const list = ((scorersCache[slug] && scorersCache[slug].scorers) || []).filter(x => x.team.id === 'espn-' + m.espn[side])
+          .map(x => ({ id: null, name: x.player.name, goals: x.goals, played: x.playedMatches, pos: 'A' }));
+        if (list.length) {
+          m.scorers = m.scorers || { home: [], away: [] };
+          m.scorers[side] = list.slice(0, 5);
+          m.teamGoals = m.teamGoals || {}; m.teamGames = m.teamGames || {};
+          m.teamGoals[side] = level[side].gf; m.teamGames[side] = level[side].gp;
+        }
+      }
+      console.log(`Coupe : ${m.home.name} (${level.home.league}) – ${m.away.name} (${level.away.league}), facteur ${f.toFixed(2)}`);
+    } catch (e) { console.warn('Coupe :', e.message); }
+    await sleep(80);
+  }
+}
+
 async function enrichEspn(matches, bilan, today) {
   // Matchs européens des 5 derniers jours
   const euro = [];
@@ -560,6 +626,8 @@ async function injuriesPass(state) {
   const stage = m => { const mins = (m.kickoff - now) / 60000; return mins <= 70 && mins > 5 ? 'h1' : mins <= 190 && mins > 70 ? 'h3' : null; };
   const due = state.matches.filter(m => m.stats && stage(m) && !(m.injStages || []).includes(stage(m)));
   if (!due.length || afUsed >= AF_BUDGET - 5) return false;
+  // Compte suspendu ou clé refusée : inutile de réessayer avant le lendemain
+  if (state.afError && /suspend|account|token|key/i.test(state.afError.msg || '')) return false;
   // Identifiants API-Football des matchs venus d'ESPN
   if (due.some(m => typeof m.fixtureId !== 'number')) {
     try {
@@ -748,6 +816,7 @@ async function main() {
     const matches = await daily(today);
     applyLearning(matches, bilan);
     try { await enrichFdcouk(matches); } catch (e) { console.warn('xG / marché :', e.message); }
+    try { await enrichCups(matches, today); } catch (e) { console.warn('Coupes :', e.message); }
     try { await enrichEspn(matches, bilan, today); } catch (e) { console.warn('Forme / fatigue :', e.message); }
     await fs.writeFile(BILAN_FILE, JSON.stringify(bilan));
     state = { date: today, generatedAt: new Date().toISOString(), afUsed: 0, matches, events: [], afError: afError ? { at: Date.now(), msg: afError } : null };

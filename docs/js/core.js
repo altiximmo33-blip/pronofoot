@@ -547,6 +547,69 @@ export function failReason(m, lh, la, h, a) {
   return parts.join(' ; ');
 }
 
+// ---------- Coupes et coupes d'Europe : niveau de chaque équipe dans son championnat ----------
+// Niveau approximatif des championnats (100 = Premier League), pour comparer deux équipes de pays ou de divisions différents
+export const LEAGUE_LEVEL = {
+  'eng.1': ['Premier League', 1, 100], 'esp.1': ['Liga', 1, 95], 'ita.1': ['Serie A', 1, 92], 'ger.1': ['Bundesliga', 1, 92], 'fra.1': ['Ligue 1', 1, 88],
+  'por.1': ['Liga Portugal', 1, 80], 'ned.1': ['Eredivisie', 1, 80], 'bel.1': ['Pro League', 1, 76], 'tur.1': ['Süper Lig', 1, 74],
+  'eng.2': ['Championship', 2, 72], 'ger.2': ['2. Bundesliga', 2, 68], 'esp.2': ['Liga 2', 2, 64], 'ita.2': ['Serie B', 2, 64], 'fra.2': ['Ligue 2', 2, 62],
+  'sco.1': ['Premiership', 1, 68], 'gre.1': ['Super League', 1, 68], 'aut.1': ['Bundesliga autrichienne', 1, 68], 'sui.1': ['Super League suisse', 1, 66],
+  'den.1': ['Superliga', 1, 64], 'cze.1': ['Tchéquie', 1, 62], 'nor.1': ['Norvège', 1, 60], 'swe.1': ['Suède', 1, 58], 'pol.1': ['Pologne', 1, 60],
+  'ukr.1': ['Ukraine', 1, 62], 'cro.1': ['Croatie', 1, 58], 'srb.1': ['Serbie', 1, 58], 'isr.1': ['Israël', 1, 54], 'ksa.1': ['Arabie saoudite', 1, 60],
+  'rou.1': ['Roumanie', 1, 56], 'cyp.1': ['Chypre', 1, 54], 'eng.3': ['League One', 3, 58], 'eng.4': ['League Two', 4, 50],
+  'fra.3': ['National', 3, 46], 'ger.3': ['3. Liga', 3, 52], 'esp.3': ['Primera RFEF', 3, 46], 'ita.3': ['Serie C', 3, 46],
+};
+
+// Niveau d'une équipe : fiche ESPN de l'équipe (dans son championnat) → { slug, league, div, rank, coef, S, home, away }
+export function domesticLevel(teamJson) {
+  const t = teamJson && teamJson.team;
+  if (!t || !t.defaultLeague) return null;
+  const slug = t.defaultLeague.slug, L = LEAGUE_LEVEL[slug];
+  const st = {};
+  (((t.record && t.record.items) || [])[0]?.stats || []).forEach(s => { st[s.name] = s.value; });
+  const rankM = /^(\d+)/.exec(t.standingSummary || '');
+  const gp = st.gamesPlayed || 0;
+  // Force : niveau du championnat + différence de buts par match (bornée)
+  const gd = gp ? (st.pointsFor - st.pointsAgainst) / gp : 0;
+  const coef = L ? L[2] : 50;
+  return {
+    slug, league: L ? L[0] : t.defaultLeague.name, div: L ? L[1] : null, rank: rankM ? +rankM[1] : (st.rank || null), coef,
+    S: coef + Math.max(-12, Math.min(12, 6 * gd)), gp,
+    home: { p: st.homeGamesPlayed || 0, gf: st.homePointsFor || 0, ga: st.homePointsAgainst || 0, w: st.homeWins || 0 },
+    away: { p: st.awayGamesPlayed || 0, gf: st.awayPointsFor || 0, ga: st.awayPointsAgainst || 0, w: st.awayWins || 0 },
+    gf: st.pointsFor || 0,
+  };
+}
+
+// Équipe d'un championnat non couvert par ESPN (petits pays) : niveau modeste par défaut, sans bilan
+export function unknownLevel() {
+  const none = { p: 0, gf: 0, ga: 0, w: 0 };
+  return { slug: null, league: 'championnat non suivi', div: null, rank: null, coef: 55, S: 55, gp: 0, home: none, away: none, gf: 0, unknown: true };
+}
+// Nombre de matchs sur lesquels reposent les stats (en coupe : le plus grand entre compétition et championnat)
+export function statGames(m) {
+  const n = s => s && s.home && s.away ? Math.min(s.home.p, s.away.p) : 0;
+  return Math.max(n(m.stats), n(m.domStats));
+}
+// Correction des buts attendus selon l'écart de niveau (modérée : la forme du jour et la coupe gardent leur part)
+export function levelFactor(level) {
+  return Math.max(1 / 1.3, Math.min(1.3, Math.exp(0.012 * (level.home.S - level.away.S))));
+}
+
+// Écart de niveau entre les deux équipes d'un match de coupe : { gap, size: 'grand' | 'moyen' | 'faible', text, warn }
+export function levelGap(m) {
+  const h = m.level && m.level.home, a = m.level && m.level.away;
+  if (!h || !a) return null;
+  const gap = h.S - a.S, fav = gap >= 0 ? m.home.name : m.away.name, abs = Math.abs(gap);
+  const desc = (x, team) => `${team} (${x.league}${x.rank ? `, ${x.rank}${x.rank === 1 ? 'er' : 'e'}` : ''})`;
+  const divs = h.div && a.div && h.div !== a.div ? Math.abs(h.div - a.div) : 0;
+  const size = abs >= 18 ? 'grand' : abs >= 8 ? 'moyen' : 'faible';
+  const head = divs ? `${divs} division${divs > 1 ? 's' : ''} d'écart` : size === 'faible' ? 'niveau proche' : `écart de niveau ${size}`;
+  const text = `🏆 ${m.comp.type === 'europe' ? 'Coupe d\'Europe' : 'Coupe'} · ${head} : ${desc(h, m.home.name)} contre ${desc(a, m.away.name)}.`
+    + (size === 'faible' ? ' Niveau proche en coupe : risque de surprise élevé.' : ` ${fav} a nettement plus de niveau${size === 'moyen' ? ', mais la coupe réserve des surprises' : ''}.`);
+  return { gap, size, text, warn: size === 'faible' };
+}
+
 // ---------- Tireurs de penalty ----------
 // Penalties tirés dans un programme ESPN (hors séances de tirs au but) : [{ team: 'espn-ID', ev, n, ok, m }]
 export function espnPenalties(scoreboardJson) {
@@ -675,7 +738,7 @@ export function topPicks(matches, analyses, bilanRates = {}) {
   for (const m of matches) {
     const a = analyses[m.id];
     if (!a || !m.stats || a.verdict.code === 'skip' || a.verdict.score < 55 || m.status !== 'NS') continue;
-    if (Math.min(m.stats.home.p, m.stats.away.p) < 4) continue;
+    if (statGames(m) < 4) continue;
     // (les paris buteurs ne sont pas vérifiables automatiquement : hors top)
     const tip = a.tips.filter(t => !String(t.key).startsWith('SC') && t.p >= 0.60 && !t.easy)
       .filter(t => { const r = bilanRates[t.key]; return !r || r.n < 10 || r.rate >= 0.45; })
@@ -696,7 +759,7 @@ export function comboLegs(matches, analyses) {
   for (const m of matches) {
     const a = analyses[m.id];
     if (!a || !m.stats || m.status !== 'NS' || a.verdict.code === 'skip') continue;
-    const games = Math.min(m.stats.home.p, m.stats.away.p);
+    const games = statGames(m);
     if (games < 4) continue;
     const tip = a.tips.filter(t => !String(t.key).startsWith('SC') && !t.easy && t.p >= 0.55).sort((x, y) => y.p - x.p)[0];
     if (!tip) continue;

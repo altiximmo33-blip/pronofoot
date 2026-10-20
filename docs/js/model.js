@@ -93,6 +93,9 @@ function baseExpectedGoals(m) {
   const G = lambdaFrom(m.stats, m.teamStats);
   if (G) {
     const parts = [{ w: W_GOALS, lh: G.lh * HOME_BOOST * GOAL_LEVEL, la: G.la * GOAL_LEVEL }];
+    // Match de coupe : bilan du championnat de chaque équipe, à poids égal avec celui de la compétition
+    const D = m.domStats ? lambdaFrom(m.domStats, m.domTeamStats) : null;
+    if (D) parts.push({ w: W_GOALS, lh: D.lh * HOME_BOOST * GOAL_LEVEL, la: D.la * GOAL_LEVEL });
     const X = m.xg ? lambdaFrom(m.xg, m.xg.teamStats) : null;
     if (X) parts.push({ w: W_XG, lh: X.lh * HOME_BOOST * GOAL_LEVEL, la: X.la * GOAL_LEVEL });
     // Le marché intègre déjà l'avantage du terrain : pas de correction
@@ -327,7 +330,8 @@ export function analyzeMatch(m) {
   const scorerList = (pres, lambda, team) => pres.players
     .filter(p => p.status !== 'absent' && p.goals >= 2)
     .map(p => {
-      const mu = lambda * Math.min(p.share / pres.absFactor, 0.7) * presenceMult[p.status];
+      // Plafond à 60 % de chances de marquer : le maximum réaliste, même pour un grand attaquant
+      const mu = Math.min(0.92, lambda * Math.min(p.share / pres.absFactor, 0.7) * presenceMult[p.status]);
       return { ...p, team, p1: 1 - Math.exp(-mu), p2: 1 - Math.exp(-mu) * (1 + mu) };
     })
     .sort((x, y) => y.p1 - x.p1).slice(0, 4);
@@ -392,7 +396,8 @@ function buildVerdict(c) {
   score += (ph.official && pa.official) ? 15 : (ph.official || pa.official) ? 8 : 3;
   if (c.base.method === 'defaut') score -= 25;
   // Peu de matchs joués à domicile / à l'extérieur : chiffres fragiles
-  const s = c.m.stats, few = s && s.home && s.away && Math.min(s.home.p, s.away.p) < 4;
+  const s = c.m.stats, ds = c.m.domStats, nG = x => x && x.home && x.away ? Math.min(x.home.p, x.away.p) : 0;
+  const few = !!s && Math.max(nG(s), nG(ds)) < 4;
   if (few) score -= 8;
   score = Math.round(Math.max(0, Math.min(100, score)));
 
