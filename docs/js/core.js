@@ -55,7 +55,9 @@ export function buildCompetition(standingsJson, matchesJson, scorersJson) {
 }
 
 // ---------- Rapprochement des noms d'équipes entre les deux sources ----------
-const STOP = new Set(['fc', 'afc', 'ac', 'as', 'sc', 'ssc', 'cf', 'club', 'de', 'du', 'la', 'le', 'les', 'olympique', 'stade', 'rc', 'ogc', 'sv', 'vfb', 'vfl', 'tsg', 'fsv', 'sport', 'sporting', 'calcio', 'us', 'ud', 'cd', 'rcd', 'sad', 'bv', 'borussia', '1', '04', '05', 'hotspur', 'and', 'albion', 'city', 'town', 'united', 'utd']);
+const STOP = new Set(['fc', 'afc', 'ac', 'as', 'sc', 'ssc', 'cf', 'club', 'de', 'du', 'la', 'le', 'les', 'olympique', 'stade', 'rc', 'ogc', 'sv', 'vfb', 'vfl', 'tsg', 'fsv', 'sport', 'sporting', 'calcio', 'us', 'ud', 'cd', 'rcd', 'sad', 'bv', 'borussia', '1', '04', '05', 'hotspur', 'and', 'albion', 'city', 'town', 'united', 'utd',
+  // Articles et sigles trop courants pour distinguer deux clubs (« Al Diriyah » / « Al Ettifaq », « FK … »)
+  'al', 'el', 'fk', 'sk', 'if', 'bk', 'nk', 'cs', 'ks', 'gks', 'kv', 'kaa', 'krc', 'sv', 'ca', 'cr', 'ec', 'se', 'sd', 'ue', 'cfr', 'fcsb']);
 const tokens = s => norm(s).split(' ').filter(w => w && !STOP.has(w));
 const KEEP_DISTINCT = ['city', 'united'];
 
@@ -427,8 +429,9 @@ export function espnCompetition(standingsJson, schedulesJson, scorersJson = null
 }
 
 // Identifiants ESPN du match et des deux équipes
-export function espnEventTeams(scoreboardJson, homeName, awayName) {
-  const id = espnFindEvent(scoreboardJson, homeName, awayName);
+export function espnEventTeams(scoreboardJson, homeName, awayName, knownId = null) {
+  // Identifiant déjà connu (match venu du programme ESPN) : prioritaire sur la recherche par les noms
+  const id = knownId && (scoreboardJson.events || []).some(e => e.id === knownId) ? knownId : espnFindEvent(scoreboardJson, homeName, awayName);
   if (!id) return null;
   const c = (scoreboardJson.events || []).find(e => e.id === id).competitions[0];
   const h = c.competitors.find(x => x.homeAway === 'home'), a = c.competitors.find(x => x.homeAway === 'away');
@@ -453,16 +456,21 @@ export function espnLiveScore(scoreboardJson, homeName, awayName) {
 }
 
 // Retrouve un match API-Football dans le programme ESPN du jour
+// Retrouve un match dans un programme ESPN : le PLUS ressemblant (pas le premier venu),
+// avec un minimum pour chacune des deux équipes
 export function espnFindEvent(scoreboardJson, homeName, awayName) {
+  const score = (name, t) => { const e = espnTeam(t); return Math.max(similarity(name, e.name || ''), similarity(name, e.shortName || ''), norm(name) === norm(e.tla || '') ? 1 : 0); };
+  let best = null, bestScore = 0;
   for (const ev of scoreboardJson.events || []) {
     const c = ev.competitions && ev.competitions[0];
     if (!c) continue;
     const h = c.competitors.find(x => x.homeAway === 'home'), a = c.competitors.find(x => x.homeAway === 'away');
     if (!h || !a) continue;
-    const rowsH = [espnTeam(h.team)], rowsA = [espnTeam(a.team)];
-    if (findTeam(homeName, rowsH) && findTeam(awayName, rowsA)) return ev.id;
+    const sh = score(homeName, h.team), sa = score(awayName, a.team);
+    if (sh < 0.5 || sa < 0.5) continue;
+    if (sh + sa > bestScore) { bestScore = sh + sa; best = ev.id; }
   }
-  return null;
+  return best;
 }
 
 // Compositions ESPN (11 titulaires + remplaçants) appliquées à un match

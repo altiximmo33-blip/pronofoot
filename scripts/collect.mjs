@@ -197,7 +197,7 @@ async function reviewDay(y, bilan) {
       scores[m.id] = [s.h, s.a];
       // De quoi expliquer un échec : cartons rouges, tirs cadrés, titulaires réels
       const ctx = { reds: espnRedCards(boards[code], m.home.name, m.away.name), goals: espnGoalScorers(boards[code], m.home.name, m.away.name), sot: null, xi: null };
-      const ids = espnEventTeams(boards[code], m.home.name, m.away.name);
+      const ids = espnEventTeams(boards[code], m.home.name, m.away.name, espnIdOf(m));
       if (ids) {
         try {
           const sum = await espn(`${ESPN_SITE}${code}/summary?event=${ids.id}`);
@@ -339,7 +339,7 @@ async function enrichCups(matches, today) {
       if (!m.espn) {
         const day = ymd(m.kickoff);
         boards[code + day] = boards[code + day] || await espn(`${ESPN_SITE}${code}/scoreboard?dates=${day}`);
-        const ids = espnEventTeams(boards[code + day], m.home.name, m.away.name);
+        const ids = espnEventTeams(boards[code + day], m.home.name, m.away.name, espnIdOf(m));
         if (!ids) continue;
         m.espn = { id: ids.id, home: ids.homeId, away: ids.awayId };
       }
@@ -412,7 +412,7 @@ async function enrichEspn(matches, bilan, today) {
     try {
       const day = ymd(m.kickoff);
       boards[code + day] = boards[code + day] || await espn(`${ESPN_SITE}${code}/scoreboard?dates=${day}`);
-      ids = espnEventTeams(boards[code + day], m.home.name, m.away.name);
+      ids = espnEventTeams(boards[code + day], m.home.name, m.away.name, espnIdOf(m));
     } catch (e) { console.warn(e.message); continue; }
     if (!ids) continue;
     m.espn = { id: ids.id, home: ids.homeId, away: ids.awayId };
@@ -600,6 +600,33 @@ function dailySummary(matches) {
 const ESPN_FROM_MIN = 60;
 const LINEUPS_FROM_MIN = 45, LINEUPS_UNTIL_MIN = 20;
 
+// Garde-fou : deux matchs du jour ne peuvent pas pointer vers le même match ESPN.
+// En cas de doublon, on garde celui dont l'identifiant est sûr et on retire aux autres tout ce qui vient d'ESPN
+// (forme, fatigue, onzes, penalties, niveau) : mieux vaut pas d'info qu'une info d'un autre match.
+function dedupeEspn(matches) {
+  const by = {};
+  matches.filter(m => m.espn && m.espn.id).forEach(m => { (by[m.espn.id] = by[m.espn.id] || []).push(m); });
+  for (const [id, list] of Object.entries(by)) {
+    if (list.length < 2) continue;
+    for (const m of list) {
+      if (espnIdOf(m) === id) continue;
+      console.warn(`Doublon ESPN ${id} : infos ESPN retirées pour ${m.home.name} – ${m.away.name}`);
+      for (const k of ['espn', 'perf', 'fatigue', 'lastXI', 'recentXI', 'pens', 'level', 'squad']) delete m[k];
+      m.notes = [];
+    }
+  }
+}
+// Identifiant ESPN d'un match venu du programme ESPN (fixtureId « e401900893 »)
+const espnIdOf = m => (/^e(\d+)$/.exec(String(m.fixtureId || '')) || [])[1] || null;
+// Le résumé ESPN concerne-t-il bien ce match ? (les deux équipes doivent ressembler)
+function summaryMatches(sum, m) {
+  const comps = (sum && sum.header && sum.header.competitions && sum.header.competitions[0] && sum.header.competitions[0].competitors) || [];
+  const h = comps.find(c => c.homeAway === 'home'), a = comps.find(c => c.homeAway === 'away');
+  if (!h || !a) return false;
+  const ok = (name, t) => Math.max(similarity(name, t.displayName || ''), similarity(name, t.shortDisplayName || t.name || '')) >= 0.5;
+  return ok(m.home.name, h.team) && ok(m.away.name, a.team);
+}
+
 async function espnLineups(due) {
   const found = [], boards = {};
   const parisDay = t => new Date(t).toLocaleDateString('sv-SE', { timeZone: 'Europe/Paris' }).replace(/-/g, '');
@@ -609,9 +636,13 @@ async function espnLineups(due) {
     try {
       const day = parisDay(m.kickoff), key = code + day;
       boards[key] = boards[key] || await espn(`${ESPN_SITE}${code}/scoreboard?dates=${day}`);
-      const id = espnFindEvent(boards[key], m.home.name, m.away.name);
+      // Identifiant ESPN connu quand le match vient du programme ESPN ; sinon recherche par les noms
+      const id = espnIdOf(m) || espnFindEvent(boards[key], m.home.name, m.away.name);
       if (!id) continue;
-      if (applyEspnLineups(m, await espn(`${ESPN_SITE}${code}/summary?event=${id}`))) found.push(m);
+      const sum = await espn(`${ESPN_SITE}${code}/summary?event=${id}`);
+      // Garde-fou : les équipes du résumé doivent bien être celles du match
+      if (!summaryMatches(sum, m)) { console.warn(`Compos ignorées : le match ESPN ${id} ne correspond pas à ${m.home.name} – ${m.away.name}`); continue; }
+      if (applyEspnLineups(m, sum)) found.push(m);
     } catch (e) { console.warn(e.message); }
   }
   return found;
@@ -818,6 +849,7 @@ async function main() {
     try { await enrichFdcouk(matches); } catch (e) { console.warn('xG / marché :', e.message); }
     try { await enrichCups(matches, today); } catch (e) { console.warn('Coupes :', e.message); }
     try { await enrichEspn(matches, bilan, today); } catch (e) { console.warn('Forme / fatigue :', e.message); }
+    dedupeEspn(matches);
     await fs.writeFile(BILAN_FILE, JSON.stringify(bilan));
     state = { date: today, generatedAt: new Date().toISOString(), afUsed: 0, matches, events: [], afError: afError ? { at: Date.now(), msg: afError } : null };
     let summary = dailySummary(matches);
