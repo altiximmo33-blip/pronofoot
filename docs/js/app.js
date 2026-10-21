@@ -148,6 +148,16 @@ $('#match-list').addEventListener('click', e => {
   if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
 });
 
+// Cote d'un pari. On ne la devine pas : on dit la cote MINIMALE à exiger chez le bookmaker
+// (1,40, et jamais moins que la cote juste = 1 ÷ probabilité). Si on a la vraie cote, on la compare.
+const fmtOdd = o => o.toFixed(2).replace('.', ',');
+const needOdd = t => Math.max(1.4, Math.ceil(100 / Math.max(t.p, 0.01)) / 100);
+const oddTxt = t => {
+  if (!t || !t.p) return '';
+  const need = needOdd(t);
+  if (t.odd) return `cote ${fmtOdd(t.odd)} ${t.odd >= need ? '✓' : '✗ trop basse'}`;
+  return `jouable dès ${fmtOdd(need)}`;
+};
 const isFinished = m => ['FT', 'AET', 'PEN'].includes(m.status);
 
 // --- Regroupement par créneau horaire, classement et combinés ---------------------
@@ -165,7 +175,9 @@ function groupSlots(matches) {
 function bestTip(m) {
   const a = state.analyses[m.id];
   if (!a || a.verdict.code === 'skip') return null;
-  return a.tips.filter(t => t.key !== 'SC2' && t.key !== 'SCD').sort((x, y) => y.p - x.p)[0] || null;
+  // La piste phare suit le profil du match (dans un festival de buts : la ligne de buts), pas le plus gros pourcentage
+  const main = a.tips.filter(t => !String(t.key).startsWith('SC') && !/audacieux/.test(t.label));
+  return main[0] || a.tips.filter(t => t.key !== 'SC2' && t.key !== 'SCD')[0] || null;
 }
 
 // --- Tireurs de penalty (mémoire du robot), confrontés aux compos officielles ------------
@@ -331,7 +343,7 @@ function combosHtml(list) {
     if (c.grouped) {
       return `<div class="combo-card">${head}
         <ul class="combo-mini grouped">${c.sel.map(x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span>
-          ${x.options.map(o => `<span class="opt"><span><b>${esc(o.label)}</b><small> · ${esc(o.info)}</small></span><b>${pct(o.p)}</b></span>`).join('')}</span></li>`).join('')}</ul>
+          ${x.options.map(o => `<span class="opt"><span><b>${esc(o.label)}</b><small> · ${esc(o.info)} · ${oddTxt(o)}</small></span><b>${pct(o.p)}</b></span>`).join('')}</span></li>`).join('')}</ul>
       </div>`;
     }
     const p = active.reduce((acc, x) => acc * x.tip.p, 1);
@@ -341,7 +353,7 @@ function combosHtml(list) {
       : `<button class="drop" data-act="drop" data-combo="${c.id}" data-mid="${esc(x.m.id)}" aria-label="Retirer du combiné">✕</button>`;
     return `<div class="combo-card${c.best ? ' best' : ''}">
       ${head}
-      <ul class="combo-mini">${active.map(x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span><small><b>${esc(x.tip.label)}</b>${x.tip.odd ? ` · cote ${x.tip.odd.toFixed(2).replace('.', ',')}` : ''}${x.reasons && x.reasons.length ? ' · ' + esc(x.reasons.join(' · ')) : ''}</small></span><b>${pct(x.tip.p)}</b>${dropBtn(x)}</li>`).join('')}</ul>
+      <ul class="combo-mini">${active.map(x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span><small><b>${esc(x.tip.label)}</b> · ${oddTxt(x.tip)}${x.reasons && x.reasons.length ? ' · ' + esc(x.reasons.join(' · ')) : ''}</small></span><b>${pct(x.tip.p)}</b>${dropBtn(x)}</li>`).join('')}</ul>
       ${removed ? `<p class="small muted">${removed} sélection${removed > 1 ? 's' : ''} retirée${removed > 1 ? 's' : ''} · <button class="link" data-act="undrop" data-combo="${c.id}">↺ tout remettre</button></p>` : ''}
       ${c.single || !active.length ? '' : `<div class="combo-total"><span>${active.length} sélection${active.length > 1 ? 's' : ''} · <b>${p >= 0.01 ? pct(p) : '< 1 %'}</b></span><span>${oddAll ? `cote bookmaker ≈ <b>${oddAll.toFixed(1).replace('.', ',')}</b>` : `cote juste ≈ <b>${(1 / p).toFixed(1).replace('.', ',')}</b>`}</span></div>`}
     </div>`;
@@ -624,7 +636,7 @@ function compactHtml(m) {
       <span class="badge ${v.code}">${esc(v.label)}</span>
     </button>
     ${liveHtml(m, t)}
-    <div class="c-line">${t ? `<span>${esc(t.label)}${t.odd ? ` <span class="muted">· cote ${t.odd.toFixed(2).replace('.', ',')}</span>${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}` : ''}</span><b>${pct(t.p)}</b>` : `<span class="muted">${v.code === 'skip' ? 'Aucune piste retenue' : 'Pas de piste solide'}</span>`}</div>
+    <div class="c-line">${t ? `<span>${esc(t.label)} <span class="muted">· ${oddTxt(t)}</span>${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}</span><b>${pct(t.p)}</b>` : `<span class="muted">${v.code === 'skip' ? 'Aucune piste retenue' : 'Pas de piste solide'}</span>`}</div>
     ${!done && v.plan ? `<div class="c-plan">${esc(v.plan)}</div>` : ''}
     ${!done && v.reason ? `<div class="c-reason ${v.code}">${v.code === 'play' ? '✅' : v.code === 'watch' ? '⏳' : '✋'} ${esc(v.reason)}</div>` : ''}
     ${alertBoxHtml(infos)}${goodInfosHtml(infos)}
@@ -643,7 +655,8 @@ function cardHtml(m) {
   const hidden = state.hidden.has(m.id);
   const fl = flagsHtml(m, a, 8);
   const infos = keyInfo(m, a);
-  const tips = [...a.tips].sort((x, y) => y.p - x.p).slice(0, 4);
+  // Dans l'ordre de l'analyse : la piste phare du profil d'abord, puis les compléments et les buteurs
+  const tips = [...a.tips].slice(0, 6);
   return `
   <article class="card v-${v.code}${hidden ? ' is-hidden' : ''}" data-id="${esc(m.id)}">
     <div class="card-main">
@@ -675,7 +688,7 @@ function cardHtml(m) {
       </div>
       <div>
         <div class="tips-title">🎯 À jouer</div>
-        <ul class="tips">${tips.length ? tips.map(t => `<li class="${t.edge > 0.06 ? 'value' : ''}"><span>${esc(t.label)}${t.odd ? ` <span class="muted">· cote ${odd(t.odd)}</span>` : ''}${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}<small class="why">${esc(tipWhy(t, m, a))}</small></span><b>${pct(t.p)}</b>${t.key === 'SC2' ? '' : `<button class="tip-add${inPerso(m.id, t.key) ? ' on' : ''}" data-act="perso" data-key="${esc(t.key)}" aria-label="Ajouter à mon combiné">${inPerso(m.id, t.key) ? '✓' : '＋'}</button>`}</li>`).join('') : '<li class="empty">Rien de solide sur ce match.</li>'}</ul>
+        <ul class="tips">${tips.length ? tips.map(t => `<li class="${t.edge > 0.06 ? 'value' : ''}"><span>${esc(t.label)} <span class="muted">· ${oddTxt(t)}</span>${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}<small class="why">${esc(tipWhy(t, m, a))}</small></span><b>${pct(t.p)}</b>${t.key === 'SC2' ? '' : `<button class="tip-add${inPerso(m.id, t.key) ? ' on' : ''}" data-act="perso" data-key="${esc(t.key)}" aria-label="Ajouter à mon combiné">${inPerso(m.id, t.key) ? '✓' : '＋'}</button>`}</li>`).join('') : '<li class="empty">Rien de solide sur ce match.</li>'}</ul>
       </div>
     </div>
     ${readingHtml(m, a)}
@@ -878,7 +891,7 @@ function readingHtml(m, a) {
   if (abs.length) out.push(`👥 ${esc(abs.join(' ; '))}.`);
   else if (keyOut.length) out.push(`⚠ Absent${keyOut.length > 1 ? 's' : ''} : ${esc(keyOut.join(', '))}.`);
   const tips = [...a.tips].filter(t => t.key !== 'SC2' || v.profile === 'festival').slice(0, 4);
-  if (tips.length) out.push(`🎯 Ce qu'on joue : ${esc(tips.map(t => `${t.label} (${pct(t.p)})`).join(' · '))}.`);
+  if (tips.length) out.push(`🎯 Ce qu'on joue : ${esc(tips.map(t => `${t.label} (${pct(t.p)}, ${oddTxt(t)})`).join(' · '))}.`);
   return out.length ? `<div class="reading"><h4 class="sec-title">🧠 Lecture du match</h4>${out.map(x => `<p>${x}</p>`).join('')}</div>` : '';
 }
 
@@ -989,7 +1002,7 @@ function detailHtml(m, a) {
     ${sec(`👥 Compositions${official ? ' <span class="chip ok">officielles</span>' : ' <span class="chip">équipe type</span>'}`, composBody, true)}
     ${scorers.length || pens.length ? sec('⚽ Buteurs et tireurs de penalty', `${pensHtml}<ul class="play-list">${scorers.map(p => `<li><div><b>${esc(p.name)}${takers.has(lastName(p.name)) ? ' 🎯' : ''}</b><span class="muted small">${esc(p.team)} · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} match${p.played > 1 ? 's' : ''}` : ''} · ${{ titulaire: 'titulaire ✓', remplacant: 'sur le banc', incertain: 'incertain', probable: 'compo pas encore connue' }[p.status] || ''}${p.hot ? ` · 🔥 ${p.recent} buts sur ses ${p.recentGames} derniers matchs` : ''}${p.p2 >= 0.1 ? ` · doublé ${pct(p.p2)}` : ''}</span></div><b class="p">${pct(p.p1)}</b></li>`).join('')}</ul>`) : ''}
     ${sec('📈 Forme, niveau des adversaires, fatigue', formBody + notes)}
-    ${sec('🔢 Probabilités utiles (40 à 80 %)', `${bookLine}${easy}<table>${a.markets.filter(x => x.p >= 0.4 && x.p <= 0.8).sort((x, y) => y.p - x.p).map(x => `<tr><td>${esc(x.label)}</td><td class="num">${pct(x.p)}</td></tr>`).join('')}</table>`)}
+    ${sec('🔢 Paris possibles et cote à exiger', `${bookLine}${easy}<p class="small muted">« Jouable dès » : la cote minimale à trouver chez votre bookmaker (1,40, et jamais moins que ce que vaut le pari).</p><table><tr><th>Pari</th><th class="num">Chance</th><th class="num">Jouable dès</th></tr>${a.markets.filter(x => x.p >= 0.4 && x.p <= 0.85).sort((x, y) => y.p - x.p).map(x => `<tr><td>${esc(x.label)}${x.odd ? ` <span class="muted small">(cote ${fmtOdd(x.odd)})</span>` : ''}</td><td class="num">${pct(x.p)}</td><td class="num">${fmtOdd(needOdd(x))}</td></tr>`).join('')}</table>`)}
     ${m.h2h && m.h2h.length ? sec('🤝 Confrontations directes', `<table>${m.h2h.map(g => `<tr><td class="small muted">${new Date(g.date).toLocaleDateString('fr-FR')}</td><td>${esc(g.home)} – ${esc(g.away)}</td><td class="num"><b>${esc(g.score)}</b></td></tr>`).join('')}</table>`) : ''}
   </div>`;
 }

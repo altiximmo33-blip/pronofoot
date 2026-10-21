@@ -745,7 +745,7 @@ export function topPicks(matches, analyses, bilanRates = {}) {
     if (!a || !m.stats || a.verdict.code === 'skip' || a.verdict.score < 55 || m.status !== 'NS') continue;
     if (statGames(m) < 4) continue;
     // (les paris buteurs ne sont pas vérifiables automatiquement : hors top)
-    const tip = a.tips.filter(t => !String(t.key).startsWith('SC') && t.p >= 0.60 && !t.easy)
+    const tip = a.tips.filter(t => !String(t.key).startsWith('SC') && t.p >= 0.60)
       .filter(t => { const r = bilanRates[t.key]; return !r || r.n < 10 || r.rate >= 0.45; })
       .sort((x, y) => y.p - x.p)[0];
     if (!tip) continue;

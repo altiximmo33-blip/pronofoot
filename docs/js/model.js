@@ -327,7 +327,7 @@ export function analyzeMatch(m) {
     { key: '2BTTS', label: `${A} gagne et les deux équipes marquent`, p: sum((h, a) => a > h && h > 0) },
     { key: '1CS', label: `${H} gagne sans encaisser`, p: sum((h, a) => h > a && a === 0) },
     { key: '2CS', label: `${A} gagne sans encaisser`, p: sum((h, a) => a > h && h === 0) },
-  ].map(x => ({ ...x, edge: x.odd ? x.p * x.odd - 1 : null }));
+  ].map(x => ({ ...x, edge: x.odd ? x.p * x.odd - 1 : null, minOdd: minOdd(x.p) }));
   // Pari « facile » : trop probable pour rapporter quelque chose (cote d'environ 1,50 ou moins),
   // simple victoire d'un gros favori, ou double chance du favori
   const homeFav = o.home >= o.away;
@@ -366,6 +366,12 @@ export function analyzeMatch(m) {
   };
 }
 
+// Cote minimale à exiger pour jouer un pari : 1,40, et jamais moins que sa cote juste (1 ÷ probabilité).
+// La piste suit l'ANALYSE : on ne l'écarte pas parce qu'elle est probable ; c'est la cote du bookmaker
+// (que l'utilisateur vérifie) qui décide. Seuls les paris à plus de 85 % sont écartés : jamais payés 1,40.
+export const MIN_ODD = 1.4, MAX_P = 0.85;
+export const minOdd = p => p > 0 ? Math.max(MIN_ODD, Math.ceil(100 / p) / 100) : 99;
+
 // --- 5. Verdict : à jouer / à surveiller / trop imprévisible --------------------
 function buildVerdict(c) {
   const { o, markets, ph, pa } = c;
@@ -379,7 +385,8 @@ function buildVerdict(c) {
   const dominant = gap >= 0.3, F = favSide === 'home' ? { r: ['H2+', '1O25', '1'], g: ['H3G', 'H2G'], cs: ['1CS', '1'] } : { r: ['A2+', '2O25', '2'], g: ['A3G', 'A2G'], cs: ['2CS', '2'] };
   const profile = tot >= 3.3 ? 'festival' : tot >= 2.7 ? 'ouvert' : tot <= 2.15 ? 'ferme' : 'equilibre';
   const byKey = k => markets.find(x => x.key === k);
-  const ok = x => x && x.p <= 0.8 && (x.edge == null || x.edge > -0.05);
+  // Cote d'au moins 1,40 (réelle si on l'a, sinon estimée) : pas de pari « sûr » qui ne rapporte rien
+  const ok = x => x && x.p <= MAX_P && (!x.odd || x.odd >= MIN_ODD) && (x.edge == null || x.edge > -0.05);
   // Dans une famille rangée de la plus ambitieuse à la plus sûre : la plus ambitieuse à 55 % ou plus, sinon à 45 % ou plus
   const pick = keys => { const l = keys.map(byKey).filter(ok); return l.find(x => x.p >= 0.55) || l.filter(x => x.p >= 0.45).sort((a, b) => b.p - a.p)[0] || null; };
   const families = {
@@ -390,6 +397,12 @@ function buildVerdict(c) {
   }[profile].filter(Boolean);
   const tips = [];
   for (const fam of families) { const t = pick(fam); if (t && !tips.includes(t)) tips.push(t); if (tips.length >= 3) break; }
+  // Festival de buts : la ligne audacieuse au-dessus de la piste principale, si elle reste crédible (45 % et plus)
+  if (profile === 'festival') {
+    const main = tips.find(t => ['O25', 'O35', 'O45'].includes(t.key));
+    const next = main && { O25: 'O35', O35: 'O45' }[main.key] && byKey({ O25: 'O35', O35: 'O45' }[main.key]);
+    if (next && next.p >= 0.45 && ok(next)) tips.push({ ...next, label: `${next.label} (audacieux)` });
+  }
 
   // Buteurs : seulement dans les équipes qui doivent marquer (1,2 but attendu ou plus), jamais dans un match fermé
   const scoring = s => (s === 'home' ? c.lh : c.la) >= 1.2;
@@ -397,17 +410,17 @@ function buildVerdict(c) {
     .filter(p => profile !== 'ferme' || p.p1 >= 0.4).sort((a, b) => b.p1 - a.p1);
   // Pari buteur : à partir de 30 % (cote d'environ 3), titulaire confirmé en priorité
   const scorerTip = sc.find(p => p.status === 'titulaire' && p.p1 >= 0.3 && p.p1 < 0.7) || sc.find(p => p.p1 >= 0.3 && p.p1 < 0.7);
-  if (scorerTip) tips.push({ key: 'SC', label: `${scorerTip.name} buteur${scorerTip.status === 'titulaire' ? ' (titulaire)' : ''}`, p: scorerTip.p1, edge: null, team: scorerTip.team, player: scorerTip.name, hot: scorerTip.hot, recent: scorerTip.recent, recentGames: scorerTip.recentGames });
+  if (scorerTip) tips.push({ key: 'SC', label: `${scorerTip.name} buteur${scorerTip.status === 'titulaire' ? ' (titulaire)' : ''}`, p: scorerTip.p1, edge: null, minOdd: minOdd(scorerTip.p1), team: scorerTip.team, player: scorerTip.name, hot: scorerTip.hot, recent: scorerTip.recent, recentGames: scorerTip.recentGames });
   // Buteur double chance : « X ou Y marque » avec les deux meilleurs buteurs présents
   // (on suppose les deux événements indépendants : légèrement optimiste si les deux jouent ensemble)
   const duo = sc.filter(p => p.p1 >= 0.25 && p.status !== 'remplacant' && p.status !== 'incertain').slice(0, 2);
   if (duo.length === 2) {
     const pd = 1 - (1 - duo[0].p1) * (1 - duo[1].p1);
-    if (pd >= 0.45 && pd < 0.85) tips.push({ key: 'SCD', label: `${duo[0].name} ou ${duo[1].name} buteur`, p: pd, edge: null, duo: duo.map(p => ({ name: p.name, team: p.team, p1: p.p1, goals: p.goals, status: p.status })) });
+    if (pd >= 0.45 && pd <= MAX_P) tips.push({ key: 'SCD', label: `${duo[0].name} ou ${duo[1].name} buteur`, p: pd, edge: null, minOdd: minOdd(pd), duo: duo.map(p => ({ name: p.name, team: p.team, p1: p.p1, goals: p.goals, status: p.status })) });
   }
   // Doublé : seulement quand on attend beaucoup de buts de cette équipe
   const dbl = (profile === 'festival' || dominant) ? sc.find(p => p.p2 >= 0.15) : null;
-  if (dbl) tips.push({ key: 'SC2', label: `${dbl.name} doublé (pari osé)`, p: dbl.p2, edge: null, player: dbl.name });
+  if (dbl) tips.push({ key: 'SC2', label: `${dbl.name} doublé (pari osé)`, p: dbl.p2, edge: null, minOdd: minOdd(dbl.p2), player: dbl.name });
 
   // Le plan en une phrase
   const n1 = x => x.toFixed(1).replace('.', ',');
