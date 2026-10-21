@@ -533,18 +533,26 @@ async function enrichEspn(matches, bilan, today) {
         const regs = [...cnt.entries()].filter(([, n]) => n >= Math.ceil(rec.length * 0.6)).map(([n]) => n);
         if (regs.length >= 8) rotated = regs.filter(n => !rec[0].some(p => p.n === n)).length;
       }
-      m.fatigue[side] = { rest, euro: eu ? { comp: eu.comp, away: eu.away, opp: eu.opp, date: eu.date } : null, rotated: rotated >= 3 ? rotated : 0 };
-      if (rest != null && rest <= 4 && rotated >= 3) {
-        m.notes.push(`${name} a joué il y a ${rest} jour${rest > 1 ? 's' : ''} mais avait fait tourner (${rotated} titulaires habituels au repos) : équipe type fraîche attendue.`);
-      } else if (eu && rest != null && rest <= 4) {
-        m.notes.push(`Fatigue : ${name} a joué ${dayName(eu.date)} en ${eu.comp}${eu.away ? ` à l'extérieur (déplacement chez ${eu.opp})` : ` contre ${eu.opp}`}, ${rest} jour${rest > 1 ? 's' : ''} de repos.`);
+      // Dernier match joué (n'importe quelle compétition) ; c'est un match européen seulement s'il est CE dernier match
+      const lastEuro = eu && eu.date >= lastDate ? { comp: eu.comp, away: eu.away, opp: eu.opp, date: eu.date } : null;
+      m.fatigue[side] = { rest, lastDay: last ? dayName(last) : null, euro: lastEuro, rotated: rotated >= 3 ? rotated : 0, tired: false };
+    }
+    // Fatigue RELATIVE : seul compte l'écart de repos entre les deux équipes (en Ligue des champions,
+    // tout le monde a joué le week-end). On ne signale que 2 jours d'écart ou plus, pour l'équipe qui a joué
+    // il y a 4 jours ou moins, sauf si elle avait fait tourner.
+    const fh = m.fatigue.home, fa = m.fatigue.away;
+    if (fh && fa && fh.rest != null && fa.rest != null) {
+      for (const [sd, me, other] of [['home', fh, fa], ['away', fa, fh]]) {
+        const gap = other.rest - me.rest, name = m[sd].name, otherName = m[sd === 'home' ? 'away' : 'home'].name;
+        if (gap < 2 || me.rest > 4) continue;
+        if (me.rotated) { m.notes.push(`${name} a ${gap} jours de repos de moins que ${otherName}, mais avait fait tourner (${me.rotated} titulaires habituels au repos) : équipe type fraîche attendue.`); continue; }
+        me.tired = true; me.gap = gap;
+        m.notes.push(`Fatigue : ${name} a joué ${me.lastDay}${me.euro ? ` en ${me.euro.comp}${me.euro.away ? ` à l'extérieur (chez ${me.euro.opp})` : ` contre ${me.euro.opp}`}` : ''} : ${me.rest} jour${me.rest > 1 ? 's' : ''} de repos, contre ${other.rest} pour ${otherName}.`);
         if (m.adj) {
-          m.adj[side] *= eu.away ? 0.95 : 0.97;                      // attaque émoussée
-          m.adj[side === 'home' ? 'away' : 'home'] *= eu.away ? 1.04 : 1.02; // défense plus perméable
+          const away = me.euro && me.euro.away;
+          m.adj[sd] *= away ? 0.95 : 0.97;                                   // attaque émoussée
+          m.adj[sd === 'home' ? 'away' : 'home'] *= away ? 1.04 : 1.02;     // défense plus perméable
         }
-      } else if (rest != null && rest <= 2) {
-        m.notes.push(`Fatigue : ${name} n'a eu que ${rest} jour${rest > 1 ? 's' : ''} de repos.`);
-        if (m.adj) m.adj[side] *= 0.97;
       }
     }
   }

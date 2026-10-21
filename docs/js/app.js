@@ -274,7 +274,7 @@ function solidFav(m, a, side) {
   const rot = a.presence[side].rotation;
   if (rot && rot.changes >= 4) return false;
   const f = m.fatigue && m.fatigue[side];
-  return !(f && f.euro && f.rest != null && f.rest <= 3);
+  return !(f && f.tired);
 }
 // Assez de matchs pour se fier aux stats (en coupe, le niveau du championnat compense un peu le petit nombre)
 const usable = m => m.status === 'NS' && m.stats && state.analyses[m.id] && statGames(m) >= (m.level ? 3 : 4);
@@ -565,8 +565,8 @@ function keyInfo(m, a) {
     const rot = rotationText(m, a.presence[side], side);
     if (rot) out.unshift({ k: rot.level === 'bad' ? 'bad' : '', t: rot.long });
     if (f && f.rotated) { /* avait fait tourner : pas de fatigue (dit dans la lecture du match) */ }
-    else if (f && f.euro && f.rest != null && f.rest <= 4) out.push({ k: 'bad', t: `😓 ${m[side].name} fatigué : ${f.euro.comp}${f.euro.away ? ' à l\'extérieur' : ''} il y a ${f.rest} jour${f.rest > 1 ? 's' : ''}` });
-    else if (f && f.rest != null && f.rest <= 2) out.push({ k: 'bad', t: `😓 ${m[side].name} : seulement ${f.rest} jour${f.rest > 1 ? 's' : ''} de repos` });
+    else if (f && f.tired) out.push({ k: 'bad', t: `😓 ${m[side].name} moins reposé : ${f.rest} jour${f.rest > 1 ? 's' : ''} de repos, ${f.gap} de moins que l'adversaire${f.euro ? ` (${f.euro.comp}${f.euro.away ? ' à l\'extérieur' : ''} ${f.lastDay})` : ''}` });
+
   }
   // Tireurs de penalty : affichés dès que les compos officielles sont connues
   if (m.lineups && m.lineups.home && m.lineups.home.status === 'officielle') {
@@ -904,7 +904,7 @@ function keyPoints(m, a) {
     const keyOut = pr.missing.filter(x => x.status === 'absent' && x.share >= 0.2);
     if (keyOut.length) ctx.push([3, `${name} sans ${keyOut.map(x => x.name).join(', ')}, son buteur principal`]);
     if (fa && fa.rotated && fa.rest <= 4) ctx.push([2, `${name} avait fait tourner au dernier match : équipe type fraîche`]);
-    else if (fa && fa.euro && fa.rest != null && fa.rest <= 3) ctx.push([2, `${name} a joué la ${fa.euro.comp} il y a ${fa.rest} jours`]);
+    else if (fa && fa.tired) ctx.push([2, `${name} moins reposé (${fa.rest} jours de repos, ${fa.gap} de moins que l'adversaire)`]);
     const hot = pr.players.find(x => x.hot && x.status !== 'absent' && !x.returning);
     if (hot) ctx.push([1, `${hot.name} en série (${hotTxt(hot)})`]);
     const rf = m.recentForm && m.recentForm[sd];
@@ -953,9 +953,9 @@ function readingHtml(m, a) {
     // Repos, fatigue, rotation
     const fa = m.fatigue && m.fatigue[sd], pr = a.presence[sd];
     if (fa && fa.rotated && fa.rest != null && fa.rest <= 4) out.push(`😴 a joué il y a ${fa.rest} j mais avait fait tourner (${fa.rotated} titulaires au repos) : équipe type fraîche`);
-    else if (fa && fa.euro && fa.rest != null && fa.rest <= 4) out.push(`😓 ${fa.euro.comp}${fa.euro.away ? ' à l\'extérieur' : ''} il y a ${fa.rest} j`);
-    else if (fa && fa.rest != null && fa.rest <= 2) out.push(`😓 ${fa.rest} j de repos`);
-    else if (fa && fa.rest != null && fa.rest >= 6) out.push(`${fa.rest} jours de repos`);
+    else if (fa && fa.tired) out.push(`😓 ${fa.rest} j de repos, ${fa.gap} de moins que l'adversaire${fa.euro ? ` (${fa.euro.comp} ${fa.lastDay})` : ''}`);
+
+
     else if (pr.rested && !pr.official) out.push(`😴 avait fait tourner au dernier match : équipe type attendue`);
     // Absences et compo
     const rot = rotationText(m, pr, sd);

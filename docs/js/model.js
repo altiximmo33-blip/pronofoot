@@ -89,8 +89,13 @@ function lambdaFrom(s, ts, prior = PRIOR) {
 // le marché est le signal le plus fiable, puis les xG, puis les buts réels.
 const W_GOALS = 0.35, W_XG = 0.25, W_MARKET = 0.40;
 
+// Coupes d'Europe : la moyenne de la compétition n'est calculée que sur quelques journées (souvent très
+// prolifiques en début de saison) ; on prend la référence d'une saison européenne normale (~3 buts par match)
+const EURO_AVG = { avgHome: 1.65, avgAway: 1.35 };
+
 function baseExpectedGoals(m) {
-  const G = lambdaFrom(m.stats, m.teamStats);
+  const stats = m.comp && m.comp.type === 'europe' && m.stats ? { ...m.stats, ...EURO_AVG } : m.stats;
+  const G = lambdaFrom(stats, m.teamStats);
   if (G) {
     const parts = [{ w: W_GOALS, lh: G.lh * HOME_BOOST * GOAL_LEVEL, la: G.la * GOAL_LEVEL }];
     // Match de coupe : bilan du championnat de chaque équipe, à poids égal avec celui de la compétition
@@ -413,7 +418,11 @@ function buildVerdict(c) {
   const H = c.m.home.name, A = c.m.away.name, tot = c.lh + c.la;
   const favSide = o.home >= o.away ? 'home' : 'away', favName = favSide === 'home' ? H : A;
   const dominant = gap >= 0.3, F = favSide === 'home' ? { r: ['H2+', '1O25', '1'], g: ['H3G', 'H2G'], cs: ['1CS', '1'] } : { r: ['A2+', '2O25', '2'], g: ['A3G', 'A2G'], cs: ['2CS', '2'] };
-  const profile = tot >= 3.3 ? 'festival' : tot >= 2.7 ? 'ouvert' : tot <= 2.15 ? 'ferme' : 'equilibre';
+  // Profil jugé par rapport à la NORME de la compétition (ex. ~3 buts en Ligue des champions, ~2,7 en Ligue 1)
+  const ref = c.m.comp && c.m.comp.type === 'europe' ? EURO_AVG.avgHome + EURO_AVG.avgAway
+    : c.m.stats && c.m.stats.avgHome ? c.m.stats.avgHome + c.m.stats.avgAway : 2.7;
+  const profile = tot >= Math.max(3.3, ref * 1.15) ? 'festival' : tot >= Math.max(2.7, ref * 1.02) ? 'ouvert'
+    : tot <= Math.min(2.3, ref * 0.8) ? 'ferme' : 'equilibre';
   const byKey = k => markets.find(x => x.key === k);
   // Cote d'au moins 1,40 (réelle si on l'a, sinon estimée) : pas de pari « sûr » qui ne rapporte rien
   const ok = x => x && x.p <= MAX_P && (!x.odd || x.odd >= MIN_ODD) && (x.edge == null || x.edge > -0.05);
@@ -426,7 +435,7 @@ function buildVerdict(c) {
     const p = c.m.perf && c.m.perf[side], f = c.m.fatigue && c.m.fatigue[side], pr = side === 'home' ? ph : pa;
     if (p && ['malchanceuse', 'en pleine bourre'].includes(p.label)) e += 1;
     if (p && ['chanceuse', 'en galère'].includes(p.label)) e -= 1;
-    if (f && f.euro && f.rest != null && f.rest <= 3) e -= 1;
+    if (f && f.tired) e -= 1; // fatigue RELATIVE (2 jours de repos de moins que l'adversaire)
     if (pr.rested) e += 1;
     // Forme pondérée par le niveau des adversaires (5 derniers matchs, toutes compétitions)
     const rf = c.m.recentForm && c.m.recentForm[side];
