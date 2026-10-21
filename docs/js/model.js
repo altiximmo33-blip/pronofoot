@@ -195,9 +195,19 @@ function teamPresence(m, side) {
     // Forme récente : part des buts de l'équipe sur ses derniers matchs (ramenée vers zéro, petit échantillon)
     const recent = recentOf(p.name);
     const recentShare = rg && recent != null ? recent / (Math.max(rg.teamGoals, 1) + 3) : null;
-    const share = p.recentOnly ? 0.7 * recentShare : recentShare != null ? 0.5 * seasonShare + 0.5 * recentShare : seasonShare;
-    const hot = recent != null && rg && (recent >= 3 || (recent >= 2 && rg.games <= 4));
-    return { ...p, team: m[side].name, status, reason: inj ? inj.reason : (status === 'absent' ? 'Hors groupe' : ''), share: Math.min(share, 0.7), recent, recentGames: rg ? rg.games : null, hot };
+    // Série en cours : part des buts sur les 3 derniers matchs (un joueur qui marque à chaque match pèse plus)
+    const l3n = rg && rg.last3 ? (rg.last3[Object.keys(rg.last3).find(x => samePlayer({ name: x }, { name: p.name }))] || 0) : 0;
+    const last3Share = rg && rg.last3Goals != null ? l3n / (rg.last3Goals + 2) : 0;
+    const formShare = recentShare != null ? Math.max(recentShare, 0.8 * last3Share) : null;
+    const share = p.recentOnly ? 0.8 * formShare : formShare != null ? 0.5 * seasonShare + 0.5 * formShare : seasonShare;
+    // En forme : 3 buts sur les 6 derniers matchs, OU une série en cours (2 buts sur les 3 derniers)
+    const last3 = l3n;
+    const hot = recent != null && rg && (recent >= 3 || last3 >= 2 || (recent >= 2 && rg.games <= 4));
+    // Retour de longue absence : aucune titularisation sur les 6 derniers matchs (blessure, suspension…)
+    // → pas encore à 100 % : on ne le cible pas comme buteur
+    const recXI = m.recentXI && m.recentXI[side];
+    const returning = !p.recentOnly && recXI && recXI.length >= 5 && !recXI.slice(0, 6).some(xi => xi.some(x => samePlayer({ name: x.n }, p)));
+    return { ...p, team: m[side].name, status, reason: inj ? inj.reason : (status === 'absent' ? 'Hors groupe' : ''), share: Math.min(share, 0.7), recent, recentGames: rg ? rg.games : null, last3, hot, returning: !!returning };
   });
 
   // Impact offensif : part des buts de l'équipe que représentent les absents
@@ -212,6 +222,17 @@ function teamPresence(m, side) {
   });
   // Absents qui ne sont pas des buteurs (défenseurs, gardiens...) : léger impact défensif
   const otherOut = injuries.filter(i => !pool.some(p => samePlayer(i, p)) && !/question|doubt/i.test(i.type || ''));
+  // Rotation au dernier match : si l'équipe a laissé au repos au moins 3 titulaires habituels,
+  // l'équipe type est attendue aujourd'hui (joueurs frais, même avec peu de jours de repos)
+  let rested = null;
+  const rec = m.recentXI && m.recentXI[side];
+  if (rec && rec.length >= 4) {
+    const cnt = new Map();
+    rec.forEach(xi => xi.forEach(p => cnt.set(p.n, (cnt.get(p.n) || 0) + 1)));
+    const regs = [...cnt.entries()].filter(([, n]) => n >= Math.ceil(rec.length * 0.6)).map(([n]) => n);
+    const out = regs.filter(n => !rec[0].some(p => samePlayer({ name: p.n }, { name: n })));
+    if (regs.length >= 8 && out.length >= 3) rested = { count: out.length, names: out.slice(0, 5) };
+  }
   // Turn-over : titulaires habituels (5 derniers matchs) absents de la compo officielle, ligne par ligne,
   // quel que soit leur poste (un défenseur forfait non signalé par la liste des blessés est rattrapé ici)
   let rotation = null, attF = 1, defF = 1;
@@ -250,7 +271,7 @@ function teamPresence(m, side) {
       attF = 1 - Math.min(0.12, 0.03 * attOut + 0.02 * rookie('MF'));
     }
   }
-  return { official, players, missing, otherOut, rotation, absFactor: Math.max(factor, 0.6), factor: Math.max(factor, 0.6) * attF, defPenalty: Math.min(1.2, (1 + Math.min(otherOut.length * 0.03, 0.12)) * defF) };
+  return { official, players, missing, otherOut, rotation, rested, absFactor: Math.max(factor, 0.6), factor: Math.max(factor, 0.6) * attF, defPenalty: Math.min(1.2, (1 + Math.min(otherOut.length * 0.03, 0.12)) * defF) };
 }
 
 // --- 3. Forme -----------------------------------------------------------------
@@ -316,6 +337,14 @@ export function analyzeMatch(m) {
     { key: 'H2G', label: `${H} marque 2 buts ou plus`, p: 1 - pmf(0, lh) - pmf(1, lh) },
     { key: 'A2G', label: `${A} marque 2 buts ou plus`, p: 1 - pmf(0, la) - pmf(1, la) },
     { key: 'O45', label: 'Plus de 4,5 buts', p: over(4.5) },
+    { key: 'H3+', label: `${H} gagne par 3 buts d'écart ou plus`, p: sum((h, a) => h - a >= 3) },
+    { key: 'A3+', label: `${A} gagne par 3 buts d'écart ou plus`, p: sum((h, a) => a - h >= 3) },
+    { key: 'BTTSO25', label: 'Les deux équipes marquent et plus de 2,5 buts', p: sum((h, a) => h > 0 && a > 0 && h + a > 2) },
+    // Double chance « protégée » + buts : pour monter la cote d'une double chance
+    { key: '1NU35', label: `${H} ou nul et moins de 3,5 buts`, p: sum((h, a) => h >= a && h + a <= 3) },
+    { key: 'N2U35', label: `${A} ou nul et moins de 3,5 buts`, p: sum((h, a) => a >= h && h + a <= 3) },
+    { key: '1NO15', label: `${H} ou nul et plus de 1,5 buts`, p: sum((h, a) => h >= a && h + a >= 2) },
+    { key: 'N2O15', label: `${A} ou nul et plus de 1,5 buts`, p: sum((h, a) => a >= h && h + a >= 2) },
     { key: 'H3G', label: `${H} marque 3 buts ou plus`, p: 1 - pmf(0, lh) - pmf(1, lh) - pmf(2, lh) },
     { key: 'A3G', label: `${A} marque 3 buts ou plus`, p: 1 - pmf(0, la) - pmf(1, la) - pmf(2, la) },
     // Paris moins évidents : écart, combinaisons résultat + buts
@@ -344,7 +373,7 @@ export function analyzeMatch(m) {
     .filter(p => p.status !== 'absent' && (p.goals >= 2 || p.recent >= 2))
     .map(p => {
       // Plafond à 60 % de chances de marquer : le maximum réaliste, même pour un grand attaquant
-      const mu = Math.min(0.92, lambda * Math.min(p.share / pres.absFactor, 0.7) * presenceMult[p.status]);
+      const mu = Math.min(0.92, lambda * Math.min(p.share / pres.absFactor, 0.7) * presenceMult[p.status] * (p.returning ? 0.5 : 1) * (p.hot ? 1.2 : 1));
       return { ...p, team, p1: 1 - Math.exp(-mu), p2: 1 - Math.exp(-mu) * (1 + mu) };
     })
     .sort((x, y) => y.p1 - x.p1).slice(0, 4);
@@ -369,7 +398,8 @@ export function analyzeMatch(m) {
 // Cote minimale à exiger pour jouer un pari : 1,40, et jamais moins que sa cote juste (1 ÷ probabilité).
 // La piste suit l'ANALYSE : on ne l'écarte pas parce qu'elle est probable ; c'est la cote du bookmaker
 // (que l'utilisateur vérifie) qui décide. Seuls les paris à plus de 85 % sont écartés : jamais payés 1,40.
-export const MIN_ODD = 1.4, MAX_P = 0.85;
+// MAX_P = 0,71 : au-delà, la cote juste passe sous 1,40 (« Victoire PSG » à 1,30) : on ne la propose pas
+export const MIN_ODD = 1.4, MAX_P = 0.71;
 export const minOdd = p => p > 0 ? Math.max(MIN_ODD, Math.ceil(100 / p) / 100) : 99;
 
 // --- 5. Verdict : à jouer / à surveiller / trop imprévisible --------------------
@@ -389,28 +419,73 @@ function buildVerdict(c) {
   const ok = x => x && x.p <= MAX_P && (!x.odd || x.odd >= MIN_ODD) && (x.edge == null || x.edge > -0.05);
   // Dans une famille rangée de la plus ambitieuse à la plus sûre : la plus ambitieuse à 55 % ou plus, sinon à 45 % ou plus
   const pick = keys => { const l = keys.map(byKey).filter(ok); return l.find(x => x.p >= 0.55) || l.filter(x => x.p >= 0.45).sort((a, b) => b.p - a.p)[0] || null; };
-  const families = {
-    festival: [['O45', 'O35', 'O25'], dominant ? F.g : null, ['BTTS'], dominant ? F.r : null],
-    ouvert: [['O35', 'O25'], ['BTTS'], dominant ? F.r : null, dominant ? F.g : null],
-    equilibre: [gap >= 0.15 ? F.r : null, ['O25'], ['BTTS'], dominant ? F.g : null],
-    ferme: [['U15', 'U25'], dominant ? F.cs : null, ['NBTTS']],
-  }[profile].filter(Boolean);
-  const tips = [];
-  for (const fam of families) { const t = pick(fam); if (t && !tips.includes(t)) tips.push(t); if (tips.length >= 3) break; }
-  // Festival de buts : la ligne audacieuse au-dessus de la piste principale, si elle reste crédible (45 % et plus)
-  if (profile === 'festival') {
-    const main = tips.find(t => ['O25', 'O35', 'O45'].includes(t.key));
-    const next = main && { O25: 'O35', O35: 'O45' }[main.key] && byKey({ O25: 'O35', O35: 'O45' }[main.key]);
-    if (next && next.p >= 0.45 && ok(next)) tips.push({ ...next, label: `${next.label} (audacieux)` });
+  // --- Le match sous tous ses angles : résultat, buts, les deux marquent, buts d'une équipe, combinés ---
+  // Arguments hors statistiques pour départager un match serré : forme réelle, repos / rotation, fatigue, absents
+  const edgeOf = side => {
+    let e = 0;
+    const p = c.m.perf && c.m.perf[side], f = c.m.fatigue && c.m.fatigue[side], pr = side === 'home' ? ph : pa;
+    if (p && ['malchanceuse', 'en pleine bourre'].includes(p.label)) e += 1;
+    if (p && ['chanceuse', 'en galère'].includes(p.label)) e -= 1;
+    if (f && f.euro && f.rest != null && f.rest <= 3) e -= 1;
+    if (pr.rested) e += 1;
+    // Forme pondérée par le niveau des adversaires (5 derniers matchs, toutes compétitions)
+    const rf = c.m.recentForm && c.m.recentForm[side];
+    if (rf && ['solide', 'au-dessus'].includes(rf.label)) e += 1;
+    if (rf && ['inquiétante', 'en dessous'].includes(rf.label)) e -= 1;
+    if (pr.missing.some(x => x.status === 'absent' && x.share >= 0.15)) e -= 1;
+    return e;
+  };
+  const lean = favSide === 'home' ? (edgeOf('home') >= edgeOf('away') ? 'home' : 'away') : (edgeOf('away') >= edgeOf('home') ? 'away' : 'home');
+  const S = s => s === 'home' ? { win: '1', big: 'H2+', big3: 'H3+', dc: '1N', o25: '1O25', btts: '1BTTS', g3: 'H3G', g2: 'H2G', cs: '1CS' } : { win: '2', big: 'A2+', big3: 'A3+', dc: 'N2', o25: '2O25', btts: '2BTTS', g3: 'A3G', g2: 'A2G', cs: '2CS' };
+  // --- L'analyse en trois étapes, chacune découle de la précédente ---
+  // ① LE RÉSULTAT, toujours en premier : favori net = victoire (avec écart si c'est très net) ;
+  //    favori moins net = double chance ; match serré = double chance du côté qui a les arguments
+  const pick2 = (keys, min) => keys.map(byKey).filter(ok).find(x => x.p >= min) || null;
+  let resSide = favSide, result;
+  if (fav >= 0.55) result = pick([S(favSide).big, S(favSide).win]);
+  // Favori écrasant (victoire sous 1,40) : on joue ce qui est plus excitant et découle de sa victoire
+  if (!result && fav >= 0.55) result = pick2([S(favSide).big3, S(favSide).big, S(favSide).o25, S(favSide).g3, S(favSide).btts, S(favSide).cs], 0.45);
+  if (!result && fav >= 0.42 && fav < 0.55) result = pick([S(favSide).dc]);
+  if (!result) { resSide = lean; result = pick([S(lean).dc]); }
+  const isDC = result && ['1N', 'N2'].includes(result.key);
+  // ② LES BUTS, selon le profil du match
+  const goals = profile === 'ferme' ? pick(['U15', 'U25'])
+    : profile === 'equilibre' ? pick(['BTTS', 'O25'])
+    : pick(['O45', 'O35', 'O25']);
+  // ③ CE QUI EN DÉCOULE, pour monter la cote (40 % et plus)
+  const derived = [];
+  if (result) {
+    const R = resSide === 'home' ? { u35: '1NU35', o15: '1NO15' } : { u35: 'N2U35', o15: 'N2O15' };
+    if (profile === 'ferme') derived.push(isDC ? pick2([R.u35], 0.4) : pick2([S(resSide).cs], 0.4));      // favori protégé, peu de buts
+    else if (isDC) derived.push(pick2([R.o15], 0.45));                                                     // double chance + des buts
+    else {
+      derived.push(pick2([S(resSide).o25, S(resSide).btts], 0.42));                                         // le favori gagne dans un match à buts
+      if ((resSide === 'home' ? c.lh : c.la) >= 1.6) derived.push(pick([S(resSide).g3, S(resSide).g2]));    // le favori marque beaucoup
+    }
   }
+  if (profile === 'festival' || profile === 'ouvert') derived.push(pick2(['BTTSO25'], 0.45));
+  if (profile === 'festival' && goals) {
+    const next = { O25: 'O35', O35: 'O45' }[goals.key] && byKey({ O25: 'O35', O35: 'O45' }[goals.key]);
+    if (next && next.p >= 0.45 && ok(next)) derived.push({ ...next, label: `${next.label} (audacieux)` });
+  }
+  const tips = [];
+  [[result, 'result'], [goals, 'goals'], ...derived.map(d => [d, 'derived'])].forEach(([t, k]) => {
+    if (t && !tips.some(x => x.key === t.key)) tips.push({ ...t, angle: k });
+  });
+  tips.splice(4); // résultat, buts, et au plus 2 paris qui en découlent
 
   // Buteurs : seulement dans les équipes qui doivent marquer (1,2 but attendu ou plus), jamais dans un match fermé
   const scoring = s => (s === 'home' ? c.lh : c.la) >= 1.2;
-  const sc = [...c.scorers.home.filter(() => scoring('home')), ...c.scorers.away.filter(() => scoring('away'))]
-    .filter(p => profile !== 'ferme' || p.p1 >= 0.4).sort((a, b) => b.p1 - a.p1);
+  // Match fermé : peu de buts attendus, donc aucun pari buteur
+  // (et jamais un joueur qui revient d'une longue absence)
+  const sc = profile === 'ferme' ? [] : [...c.scorers.home.filter(() => scoring('home')), ...c.scorers.away.filter(() => scoring('away'))]
+    .filter(p => !p.returning).sort((a, b) => b.p1 - a.p1);
   // Pari buteur : à partir de 30 % (cote d'environ 3), titulaire confirmé en priorité
   const scorerTip = sc.find(p => p.status === 'titulaire' && p.p1 >= 0.3 && p.p1 < 0.7) || sc.find(p => p.p1 >= 0.3 && p.p1 < 0.7);
-  if (scorerTip) tips.push({ key: 'SC', label: `${scorerTip.name} buteur${scorerTip.status === 'titulaire' ? ' (titulaire)' : ''}`, p: scorerTip.p1, edge: null, minOdd: minOdd(scorerTip.p1), team: scorerTip.team, player: scorerTip.name, hot: scorerTip.hot, recent: scorerTip.recent, recentGames: scorerTip.recentGames });
+  if (scorerTip) tips.push({ key: 'SC', label: `${scorerTip.name} buteur${scorerTip.status === 'titulaire' ? ' (titulaire)' : ''}`, p: scorerTip.p1, edge: null, minOdd: minOdd(scorerTip.p1), team: scorerTip.team, player: scorerTip.name, hot: scorerTip.hot, recent: scorerTip.recent, recentGames: scorerTip.recentGames, last3: scorerTip.last3 });
+  // Joueur en série (2 buts sur ses 3 derniers matchs…) : proposé dès 22 %, cote d'environ 4,5
+  const hotTip = sc.find(p => p.hot && p !== scorerTip && p.p1 >= 0.22 && p.status !== 'remplacant');
+  if (hotTip) tips.push({ key: 'SC', label: `${hotTip.name} buteur (en série 🔥)`, p: hotTip.p1, edge: null, minOdd: minOdd(hotTip.p1), team: hotTip.team, player: hotTip.name, hot: true, recent: hotTip.recent, recentGames: hotTip.recentGames, last3: hotTip.last3 });
   // Buteur double chance : « X ou Y marque » avec les deux meilleurs buteurs présents
   // (on suppose les deux événements indépendants : légèrement optimiste si les deux jouent ensemble)
   const duo = sc.filter(p => p.p1 >= 0.25 && p.status !== 'remplacant' && p.status !== 'incertain').slice(0, 2);
@@ -492,7 +567,7 @@ function buildVerdict(c) {
     : few ? 'peu de matchs joués : chiffres encore fragiles' : 'pas assez de marge sur les cotes';
   else reason = obvious ? 'favori trop évident, rien d\'intéressant à côté' : 'trop serré ou imprévisible';
   if (obvious) flags.push({ t: 'Favori évident', k: 'gap', why:`${favName} gagne dans ${pct(fav)} des cas : la victoire simple est trop mal payée pour être intéressante. Les pistes cherchent un angle à côté (écart, buts).` });
-  return { code, label, score, reason, plan, profile, tips: tips.slice(0, 6), flags, values, obvious, easy };
+  return { code, label, score, reason, plan, profile, tips: tips.slice(0, 7), flags, values, obvious, easy };
 }
 
 // --- 6. Texte d'analyse --------------------------------------------------------

@@ -2,7 +2,7 @@ import { COMPETITIONS } from './config.js';
 import * as E from './engine.js';
 const { state, onChange, start, loadAll, toggleHidden, clearAlerts, saveSettings, testKeys } = E;
 import { load, save } from './store.js';
-import { topPicks, tipResult, bestSlot, rotationText, levelGap, statGames } from './core.js';
+import { topPicks, tipResult, bestSlot, rotationText, levelGap, statGames, teamProfile } from './core.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -158,6 +158,8 @@ const oddTxt = t => {
   if (t.odd) return `cote ${fmtOdd(t.odd)} ${t.odd >= need ? '✓' : '✗ trop basse'}`;
   return `jouable dès ${fmtOdd(need)}`;
 };
+// Joueur en forme : série en cours (buts sur les 3 derniers matchs) ou total des 6 derniers
+const hotTxt = p => p.last3 >= 2 ? `${p.last3} buts sur ses 3 derniers matchs` : `${p.recent} buts sur ses ${p.recentGames} derniers matchs`;
 const isFinished = m => ['FT', 'AET', 'PEN'].includes(m.status);
 
 // --- Regroupement par créneau horaire, classement et combinés ---------------------
@@ -313,9 +315,9 @@ function combosHtml(list) {
     if (a.verdict.profile === 'ferme') return null;
     const scoring = sd => (sd === 'home' ? a.lh : a.la) >= 1.2;
     const pool = [...(scoring('home') ? a.scorers.home : []), ...(scoring('away') ? a.scorers.away : [])];
-    const singles = pool.filter(p => p.p1 >= 0.3).sort((x, y) => y.p1 - x.p1).slice(0, 3).map(p => {
+    const singles = pool.filter(p => !p.returning && (p.p1 >= 0.3 || (p.hot && p.p1 >= 0.22))).sort((x, y) => y.p1 - x.p1).slice(0, 3).map(p => {
       const pen = ['home', 'away'].map(s => penInfo(m, s)).some(x => x && x.main && lastName(x.main.name) === lastName(p.name));
-      return { label: `${p.name} buteur${p.hot ? ' 🔥' : ''}`, p: p.p1, info: `${p.team}${p.goals ? ` · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} match${p.played > 1 ? 's' : ''}` : ''}` : ''}${p.hot ? ` · ${p.recent} buts sur ses ${p.recentGames} derniers matchs` : ''}${p.status === 'titulaire' ? ' · titulaire ✓' : ''}${pen ? ' · 🎯 penalties' : ''}` };
+      return { label: `${p.name} buteur${p.hot ? ' 🔥' : ''}`, p: p.p1, info: `${p.team}${p.goals ? ` · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} match${p.played > 1 ? 's' : ''}` : ''}` : ''}${p.hot ? ` · ${hotTxt(p)}` : ''}${p.status === 'titulaire' ? ' · titulaire ✓' : ''}${pen ? ' · 🎯 penalties' : ''}` };
     });
     const duo = a.tips.find(x => x.key === 'SCD');
     const dbl = a.tips.find(x => x.key === 'SC2');
@@ -562,7 +564,8 @@ function keyInfo(m, a) {
     const f = m.fatigue && m.fatigue[side];
     const rot = rotationText(m, a.presence[side], side);
     if (rot) out.unshift({ k: rot.level === 'bad' ? 'bad' : '', t: rot.long });
-    if (f && f.euro && f.rest != null && f.rest <= 4) out.push({ k: 'bad', t: `😓 ${m[side].name} fatigué : ${f.euro.comp}${f.euro.away ? ' à l\'extérieur' : ''} il y a ${f.rest} jour${f.rest > 1 ? 's' : ''}` });
+    if (f && f.rotated) { /* avait fait tourner : pas de fatigue (dit dans la lecture du match) */ }
+    else if (f && f.euro && f.rest != null && f.rest <= 4) out.push({ k: 'bad', t: `😓 ${m[side].name} fatigué : ${f.euro.comp}${f.euro.away ? ' à l\'extérieur' : ''} il y a ${f.rest} jour${f.rest > 1 ? 's' : ''}` });
     else if (f && f.rest != null && f.rest <= 2) out.push({ k: 'bad', t: `😓 ${m[side].name} : seulement ${f.rest} jour${f.rest > 1 ? 's' : ''} de repos` });
   }
   // Tireurs de penalty : affichés dès que les compos officielles sont connues
@@ -637,7 +640,7 @@ function compactHtml(m) {
     </button>
     ${liveHtml(m, t)}
     <div class="c-line">${t ? `<span>${esc(t.label)} <span class="muted">· ${oddTxt(t)}</span>${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}</span><b>${pct(t.p)}</b>` : `<span class="muted">${v.code === 'skip' ? 'Aucune piste retenue' : 'Pas de piste solide'}</span>`}</div>
-    ${!done && v.plan ? `<div class="c-plan">${esc(v.plan)}</div>` : ''}
+    ${!done ? keyPoints(m, a).slice(0, 2).map(l => `<div class="c-plan">${esc(l)}</div>`).join('') : ''}
     ${!done && v.reason ? `<div class="c-reason ${v.code}">${v.code === 'play' ? '✅' : v.code === 'watch' ? '⏳' : '✋'} ${esc(v.reason)}</div>` : ''}
     ${alertBoxHtml(infos)}${goodInfosHtml(infos)}
     <div class="c-chips">${chips}${favBtn}</div>
@@ -694,7 +697,7 @@ function cardHtml(m) {
     ${readingHtml(m, a)}
     ${(() => {
       // Ce que la lecture du match dit déjà (turn-over, écart de niveau, buteurs) n'est pas répété en dessous
-      const rest = infos.filter(i => !/^(👥|🔄|🏆|Buteur à suivre|✓ .* titulaire \()/.test(i.t));
+      const rest = infos.filter(i => !/^(👥|🔄|🏆|😓|Buteur à suivre|✓ .* titulaire \()/.test(i.t));
       return rest.length ? `<div class="card-infos">${alertBoxHtml(rest)}${goodInfosHtml(rest)}</div>` : '';
     })()}
     ${compareHtml(m, a)}
@@ -836,18 +839,28 @@ function tipWhy(t, m, a) {
   const H = m.home.name, A = m.away.name, tot = (a.lh + a.la).toFixed(1).replace('.', ',');
   const scoreH = Math.round((1 - Math.exp(-a.lh)) * 100), scoreA = Math.round((1 - Math.exp(-a.la)) * 100);
   if (t.key === 'O35') return `${tot} buts attendus : 4 buts ou plus dans ${pct(a.goalDist[3].p)} des cas.`;
+  if (t.key === 'BTTSO25') return `${H} marque dans ${pct(1 - Math.exp(-a.lh))} des cas, ${A} dans ${pct(1 - Math.exp(-a.la))}, ${tot} buts attendus.`;
+  if (['1NU35', 'N2U35', '1NO15', 'N2O15'].includes(t.key)) {
+    const sd = t.key.startsWith('1') ? H : A, dc = a.markets.find(x => x.key === (t.key.startsWith('1') ? '1N' : 'N2'));
+    const add = t.key.endsWith('U35') ? 'au plus 3 buts dans un match fermé' : 'au moins 2 buts dans le match';
+    return `On garde la protection « ${sd} ou nul » (${dc ? pct(dc.p) : ''}) et on ajoute ${add} : cote plus haute que la double chance seule.`;
+  }
+  if (['1N', 'N2'].includes(t.key)) {
+    const sd = t.key === '1N' ? 'home' : 'away', st = m.stats && m.stats[sd];
+    return `${m[sd].name} ne perd que dans ${pct(1 - t.p)} des cas${st && st.p ? ` (${st.w != null ? `${st.w} victoire${st.w > 1 ? 's' : ''} sur ${st.p} ` : ''}${sd === 'home' ? 'à domicile' : 'à l\'extérieur'})` : ''} : la sécurité du nul en plus.`;
+  }
   if (t.key === 'O45') return `${tot} buts attendus : vrai festival possible, 5 buts ou plus dans ${pct(t.p)} des cas.`;
   if (t.key === 'H3G') return `${H} devrait marquer environ ${a.lh.toFixed(1).replace('.', ',')} buts.`;
   if (t.key === 'A3G') return `${A} devrait marquer environ ${a.la.toFixed(1).replace('.', ',')} buts.`;
   if (['U25', 'U15'].includes(t.key)) return `Seulement ${tot} buts attendus : match fermé.`;
   if (t.key === 'NBTTS') return `${a.lh < a.la ? H : A} a du mal à marquer (${(Math.min(a.lh, a.la)).toFixed(1).replace('.', ',')} but attendu).`;
-  if (t.key === 'SC' && t.hot) return `En forme : ${t.recent} buts sur ses ${t.recentGames} derniers matchs.`;
+  if (t.key === 'SC' && t.hot) return `En forme : ${hotTxt(t)}.`;
   if (['O25', 'O15'].includes(t.key)) return `${tot} buts attendus : 3 buts ou plus dans ${pct(a.goalDist[2].p + a.goalDist[3].p)} des cas.`;
   if (['U25', 'U15'].includes(t.key)) return `Seulement ${tot} buts attendus : deux équipes qui marquent peu.`;
   if (t.key === 'BTTS') return `${H} marque dans ${scoreH} % des cas, ${A} dans ${scoreA} %.`;
   if (t.key === 'NBTTS') return `${scoreH < scoreA ? H : A} a du mal à marquer (${Math.min(scoreH, scoreA)} % de chances).`;
-  if (t.key === 'H2G') return `${H} devrait marquer environ ${a.lh.toFixed(1)} buts.`;
-  if (t.key === 'A2G') return `${A} devrait marquer environ ${a.la.toFixed(1)} buts.`;
+  if (t.key === 'H2G') return `${H} devrait marquer environ ${a.lh.toFixed(1).replace('.', ',')} buts.`;
+  if (t.key === 'A2G') return `${A} devrait marquer environ ${a.la.toFixed(1).replace('.', ',')} buts.`;
   if (t.key === 'SCD' && t.duo) {
     const d = t.duo.map(p => `${p.name} ${pct(p.p1)}${p.status === 'titulaire' ? ' (titulaire)' : ''}`).join(' et ');
     return `Il suffit qu'un des deux marque : ${d}. Pari « buteur double chance ».`;
@@ -869,30 +882,114 @@ function tipWhy(t, m, a) {
 }
 
 // --- Lecture du match : le profil, ce qui l'explique, et ce qu'on joue en conséquence ------------
-function readingHtml(m, a) {
-  const v = a.verdict, H = m.home.name, A = m.away.name;
-  // En coupe, les chiffres du championnat (plus de matchs) parlent davantage que ceux de la compétition
-  const s = m.domStats || m.stats, champ = !!m.domStats || m.statsSource === 'championnat';
-  const f = x => x.toFixed(1).replace('.', ',');
-  const out = [];
-  if (v.plan) out.push(`<b>${esc(v.plan)}</b>`);
-  if (s && s.home && s.away && s.home.p && s.away.p) {
-    out.push(`${champ ? 'En championnat, ' : ''}${esc(H)} marque ${f(s.home.gf / s.home.p)} et encaisse ${f(s.home.ga / s.home.p)} but par match à domicile ; ${esc(A)} marque ${f(s.away.gf / s.away.p)} et encaisse ${f(s.away.ga / s.away.p)} à l'extérieur.`);
+// « Ce qui ressort » : 3 lignes à lire en 5 secondes — le rapport de force, le contexte clé, ce qu'on retient
+function keyPoints(m, a) {
+  const H = m.home.name, A = m.away.name, v = a.verdict;
+  const lines = [];
+  // 1) Le résultat, en une réponse (les chiffres restent dans « Le détail »)
+  const favH = a.p.home >= a.p.away, fav = favH ? H : A, pFav = Math.max(a.p.home, a.p.away);
+  const g0 = levelGap(m), lvl = g0 && g0.size !== 'faible' && (g0.gap >= 0) === favH ? `, plus de niveau (${(favH ? m.level.home : m.level.away).league})` : '';
+  if (pFav >= 0.72) lines.push(`💪 ${fav} grand favori${lvl} : sa victoire est trop évidente pour être payée, on joue ce qui en découle.`);
+  else if (pFav >= 0.55) lines.push(`💪 ${fav} favori${lvl}.`);
+  else if (pFav >= 0.42) lines.push(`↗️ Léger avantage ${fav}, le nul reste possible.`);
+  else lines.push(`⚖️ Match ouvert : ${H} ${pct(a.p.home)} · nul ${pct(a.p.draw)} · ${A} ${pct(a.p.away)}.`);
+  // 2) Les buts : le profil du match
+  if (v.plan) lines.push(v.plan);
+  // 2) Le contexte qui peut tout changer (une seule chose, la plus importante)
+  const ctx = [];
+  for (const sd of ['home', 'away']) {
+    const pr = a.presence[sd], fa = m.fatigue && m.fatigue[sd], name = m[sd].name;
+    const rot = rotationText(m, pr, sd);
+    if (rot && pr.rotation.changes >= 3) ctx.push([3, `${name} remaniée (${pr.rotation.changes} titulaires habituels absents)`]);
+    const keyOut = pr.missing.filter(x => x.status === 'absent' && x.share >= 0.2);
+    if (keyOut.length) ctx.push([3, `${name} sans ${keyOut.map(x => x.name).join(', ')}, son buteur principal`]);
+    if (fa && fa.rotated && fa.rest <= 4) ctx.push([2, `${name} avait fait tourner au dernier match : équipe type fraîche`]);
+    else if (fa && fa.euro && fa.rest != null && fa.rest <= 3) ctx.push([2, `${name} a joué la ${fa.euro.comp} il y a ${fa.rest} jours`]);
+    const hot = pr.players.find(x => x.hot && x.status !== 'absent' && !x.returning);
+    if (hot) ctx.push([1, `${hot.name} en série (${hotTxt(hot)})`]);
+    const rf = m.recentForm && m.recentForm[sd];
+    if (rf && rf.label && rf.text) ctx.push([['inquiétante', 'défaites logiques', 'flatteuse'].includes(rf.label) ? 3 : 2, `${name} : ${rf.text}`]);
   }
   const g = levelGap(m);
-  if (g) out.push(esc(g.text.replace(/^🏆\s*/, '')));
-  // Jeu réel, joueurs en forme, absences : uniquement ce qui pèse sur le match
-  const perfTxt = ['home', 'away'].map(sd => { const p = m.perf && m.perf[sd]; return p && p.label ? `${m[sd].name} ${p.label}` : ''; }).filter(Boolean);
-  if (perfTxt.length) out.push(`Sur le jeu : ${esc(perfTxt.join(', '))}.`);
-  const hot = [...a.presence.home.players, ...a.presence.away.players].filter(p => p.hot && p.status !== 'absent').slice(0, 3);
-  if (hot.length) out.push(`🔥 En forme : ${esc(hot.map(p => `${p.name} (${p.recent} buts sur ses ${p.recentGames} derniers matchs)`).join(', '))}.`);
-  const abs = ['home', 'away'].map(sd => rotationText(m, a.presence[sd], sd)).filter(Boolean).map(r => r.short);
-  const keyOut = [...a.presence.home.missing, ...a.presence.away.missing].filter(p => p.share >= 0.15 && p.status === 'absent').map(p => `${p.name} (${p.team})`);
-  if (abs.length) out.push(`👥 ${esc(abs.join(' ; '))}.`);
-  else if (keyOut.length) out.push(`⚠ Absent${keyOut.length > 1 ? 's' : ''} : ${esc(keyOut.join(', '))}.`);
-  const tips = [...a.tips].filter(t => t.key !== 'SC2' || v.profile === 'festival').slice(0, 4);
-  if (tips.length) out.push(`🎯 Ce qu'on joue : ${esc(tips.map(t => `${t.label} (${pct(t.p)}, ${oddTxt(t)})`).join(' · '))}.`);
-  return out.length ? `<div class="reading"><h4 class="sec-title">🧠 Lecture du match</h4>${out.map(x => `<p>${x}</p>`).join('')}</div>` : '';
+  if (g && g.size !== 'faible') ctx.push([2, g.text.replace(/^🏆\s*/, '').split(' : ')[0] + ` (${g.gap >= 0 ? H : A} au-dessus)`]);
+  if (ctx.length) lines.push(`📌 ${ctx.sort((x, y) => y[0] - x[0]).slice(0, 2).map(x => x[1]).join(' · ')}.`);
+  // 3) Ce qu'on retient : résultat, buts, buteur
+  const pickA = k => a.tips.find(t => t.angle === k);
+  const sc = a.tips.find(t => t.key === 'SC');
+  const keep = [pickA('result'), pickA('goals'), sc].filter(Boolean).map(t => `${t.label.replace(' (titulaire)', '')} (${pct(t.p)})`);
+  if (keep.length) lines.push(`🎯 À retenir : ${keep.join(' · ')}.`);
+  return lines;
+}
+
+function readingHtml(m, a) {
+  const v = a.verdict, H = m.home.name, A = m.away.name;
+  const f1 = x => x.toFixed(1).replace('.', ',');
+  const ordinal = r => r === 1 ? '1re' : `${r}e`;
+  // En coupe, les chiffres du championnat (plus de matchs) parlent davantage que ceux de la compétition
+  const s = m.domStats || m.stats, ts = m.domTeamStats || m.teamStats, champ = !!m.domStats || m.statsSource === 'championnat';
+
+  // Les arguments de chaque équipe, dans son contexte (à domicile pour l'une, à l'extérieur pour l'autre)
+  const teamArgs = sd => {
+    const name = m[sd].name, other = sd === 'home' ? 'away' : 'home', venue = sd === 'home' ? 'à domicile' : 'à l\'extérieur';
+    const out = [];
+    const st = s && s[sd], rk = ts && ts[sd] && ts[sd].ranks;
+    // Profil de jeu (attaque, défense, domicile / extérieur, style, efficacité face aux xG), sinon les chiffres bruts
+    const prof = teamProfile(m, sd);
+    if (prof && (prof.tags.length || prof.xgNote)) out.push(...prof.tags, ...(prof.xgNote ? [prof.xgNote] : []));
+    else if (st && st.p) {
+      const gfR = rk && rk[sd === 'home' ? 'homeGf' : 'awayGf'], gaR = rk && rk[sd === 'home' ? 'homeGa' : 'awayGa'];
+      out.push(`${f1(st.gf / st.p)} but${st.gf / st.p >= 2 ? 's' : ''} marqué${st.gf / st.p >= 2 ? 's' : ''} et ${f1(st.ga / st.p)} encaissé${st.ga / st.p >= 2 ? 's' : ''} par match ${venue}${gfR ? ` (${ordinal(gfR)} attaque, ${ordinal(gaR)} défense ${venue})` : ''}${champ ? ' en championnat' : ''}`);
+    }
+    if (m.level && m.level[sd]) { const L = m.level[sd]; out.push(`${L.league}${L.rank ? `, ${ordinal(L.rank)}` : ''}`); }
+    // Forme sur les 5 derniers matchs (toutes compétitions), lue à la lumière du niveau des adversaires
+    const rf = m.recentForm && m.recentForm[sd];
+    if (rf) out.push(`5 derniers matchs : ${rf.games.map(g => `${g.r} ${g.score} ${g.opp}`).join(', ')}${rf.text ? ` → ${rf.text}` : ''}`);
+    else {
+      const fm = m.form && m.form[sd];
+      if (fm) out.push(`forme ${fm.slice(-5).split('').map(c => ({ W: 'V', D: 'N', L: 'D' }[c] || c)).join('')}`);
+    }
+    const p = m.perf && m.perf[sd];
+    if (p && p.label) out.push(p.label === 'malchanceuse' ? 'domine sans être récompensée' : p.label === 'chanceuse' ? 'gagne au-dessus de son jeu' : p.label);
+    // Repos, fatigue, rotation
+    const fa = m.fatigue && m.fatigue[sd], pr = a.presence[sd];
+    if (fa && fa.rotated && fa.rest != null && fa.rest <= 4) out.push(`😴 a joué il y a ${fa.rest} j mais avait fait tourner (${fa.rotated} titulaires au repos) : équipe type fraîche`);
+    else if (fa && fa.euro && fa.rest != null && fa.rest <= 4) out.push(`😓 ${fa.euro.comp}${fa.euro.away ? ' à l\'extérieur' : ''} il y a ${fa.rest} j`);
+    else if (fa && fa.rest != null && fa.rest <= 2) out.push(`😓 ${fa.rest} j de repos`);
+    else if (fa && fa.rest != null && fa.rest >= 6) out.push(`${fa.rest} jours de repos`);
+    else if (pr.rested && !pr.official) out.push(`😴 avait fait tourner au dernier match : équipe type attendue`);
+    // Absences et compo
+    const rot = rotationText(m, pr, sd);
+    if (rot) out.push(rot.short.replace(`${name} `, ''));
+    else {
+      const keyOut = pr.missing.filter(x => x.status === 'absent' && x.share >= 0.15).map(x => x.name);
+      if (keyOut.length) out.push(`⚠ sans ${keyOut.join(', ')}`);
+    }
+    const hot = pr.players.filter(x => x.hot && x.status !== 'absent').slice(0, 2);
+    if (hot.length) out.push(`🔥 ${hot.map(x => `${x.name} (${hotTxt(x)})`).join(', ')}`);
+    // Retour de longue absence : on ne le cible pas comme buteur
+    const back = pr.players.filter(x => x.returning && x.status !== 'absent' && x.goals >= 2);
+    if (back.length) out.push(`↩️ ${back.map(x => x.name).join(', ')} : aucune titularisation sur les 6 derniers matchs (retour de blessure ?), pas de pari buteur sur ${back.length > 1 ? 'eux' : 'lui'}`);
+    return `<p><b>${esc(name)}</b> · ${esc(out.join(' · ') || 'peu de données')}</p>`;
+  };
+
+  // L'analyse en étapes : ① résultat, ② buts, ③ ce qui en découle pour monter la cote, ④ buteurs
+  const line = t => `<li>${esc(t.label)} <span class="muted">· ${pct(t.p)} · ${esc(oddTxt(t))}</span><br><small class="muted">${esc(tipWhy(t, m, a))}</small></li>`;
+  const step = (title, list, empty) => `<p class="step"><b>${title}</b></p>${list.length ? `<ul class="angles">${list.map(line).join('')}</ul>` : `<p class="small muted">${empty}</p>`}`;
+  const by = k => a.tips.filter(t => t.angle === k);
+  const scorers = a.tips.filter(t => String(t.key).startsWith('SC'));
+
+  const kp = keyPoints(m, a);
+  return `<div class="reading"><h4 class="sec-title">⚡ Ce qui ressort</h4>
+    ${kp.map(l => `<p class="kp">${esc(l)}</p>`).join('')}
+    <h4 class="sec-title" style="margin-top:12px">🧠 Le détail</h4>
+    ${teamArgs('home')}${teamArgs('away')}
+    ${(() => { const g = levelGap(m); return g ? `<p>${esc(g.text.replace(/^🏆\s*/, ''))}</p>` : ''; })()}
+    ${step('① Résultat', by('result'), Math.max(a.p.home, a.p.away) >= 0.72 ? 'Victoire du favori trop évidente (cote sous 1,40) : on la joue à travers ③.' : 'Trop serré pour se prononcer sur le résultat.')}
+    <p class="small muted">${esc(H)} ${pct(a.p.home)} · nul ${pct(a.p.draw)} · ${esc(A)} ${pct(a.p.away)} — ${esc(H)} ou nul ${pct(a.p.home + a.p.draw)}, ${esc(A)} ou nul ${pct(a.p.away + a.p.draw)}.</p>
+    ${step(`② Buts — ${esc(v.plan || '')}`, by('goals'), 'Pas de tendance nette sur les buts.')}
+    ${step('③ Pour monter la cote', by('derived'), 'Rien de solide à ajouter.')}
+    ${v.profile === 'ferme' ? '<p class="step"><b>④ Buteurs</b></p><p class="small muted">Match fermé : pas de pari buteur.</p>' : step('④ Buteurs', scorers, 'Pas de buteur assez sûr.')}
+  </div>`;
 }
 
 // --- Compo dessinée sur un terrain ----------------------------------------------------
@@ -996,13 +1093,20 @@ function detailHtml(m, a) {
   const sec = (title, body, open) => `<details class="sec"${open ? ' open' : ''}><summary>${title}</summary><div class="sec-body">${body}</div></details>`;
   const pens = ['home', 'away'].map(s => penInfo(m, s)).filter(Boolean);
   const takers = new Set(pens.filter(p => p.main).map(p => lastName(p.main.name)));
-  const pensHtml = pens.length ? `<ul class="c-infos flat">${pens.map(p => `<li class="${p.k}">${esc(p.t)}</li>`).join('')}</ul>` : '<p class="small muted">Tireurs de penalty pas encore connus pour ces équipes.</p>';
+  // Penalties de chaque équipe cette saison (tirés / marqués)
+  const penTeam = ['home', 'away'].map(sd => {
+    const l = (m.pens && m.pens[sd]) || [];
+    const att = l.reduce((s, p) => s + p.att, 0), ok = l.reduce((s, p) => s + p.ok, 0);
+    return att ? `${m[sd].name} : ${att} penalt${att > 1 ? 'ies' : 'y'} tiré${att > 1 ? 's' : ''}, ${ok} marqué${ok > 1 ? 's' : ''} cette saison` : '';
+  }).filter(Boolean);
+  const pensHtml = (penTeam.length ? `<p class="small"><b>Penalties :</b> ${esc(penTeam.join(' · '))}</p>` : '')
+    + (pens.length ? `<ul class="c-infos flat">${pens.map(p => `<li class="${p.k}">${esc(p.t)}</li>`).join('')}</ul>` : '<p class="small muted">Tireurs de penalty pas encore connus pour ces équipes.</p>');
   return `
   <div class="detail">
     ${sec(`👥 Compositions${official ? ' <span class="chip ok">officielles</span>' : ' <span class="chip">équipe type</span>'}`, composBody, true)}
-    ${scorers.length || pens.length ? sec('⚽ Buteurs et tireurs de penalty', `${pensHtml}<ul class="play-list">${scorers.map(p => `<li><div><b>${esc(p.name)}${takers.has(lastName(p.name)) ? ' 🎯' : ''}</b><span class="muted small">${esc(p.team)} · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} match${p.played > 1 ? 's' : ''}` : ''} · ${{ titulaire: 'titulaire ✓', remplacant: 'sur le banc', incertain: 'incertain', probable: 'compo pas encore connue' }[p.status] || ''}${p.hot ? ` · 🔥 ${p.recent} buts sur ses ${p.recentGames} derniers matchs` : ''}${p.p2 >= 0.1 ? ` · doublé ${pct(p.p2)}` : ''}</span></div><b class="p">${pct(p.p1)}</b></li>`).join('')}</ul>`) : ''}
+    ${scorers.length || pens.length ? sec('⚽ Buteurs et tireurs de penalty', `${pensHtml}<ul class="play-list">${scorers.map(p => `<li><div><b>${esc(p.name)}${takers.has(lastName(p.name)) ? ' 🎯' : ''}</b><span class="muted small">${esc(p.team)} · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} match${p.played > 1 ? 's' : ''}` : ''} · ${{ titulaire: 'titulaire ✓', remplacant: 'sur le banc', incertain: 'incertain', probable: 'compo pas encore connue' }[p.status] || ''}${p.hot ? ` · 🔥 ${hotTxt(p)}` : ''}${p.p2 >= 0.1 ? ` · doublé ${pct(p.p2)}` : ''}</span></div><b class="p">${pct(p.p1)}</b></li>`).join('')}</ul>`) : ''}
     ${sec('📈 Forme, niveau des adversaires, fatigue', formBody + notes)}
-    ${sec('🔢 Paris possibles et cote à exiger', `${bookLine}${easy}<p class="small muted">« Jouable dès » : la cote minimale à trouver chez votre bookmaker (1,40, et jamais moins que ce que vaut le pari).</p><table><tr><th>Pari</th><th class="num">Chance</th><th class="num">Jouable dès</th></tr>${a.markets.filter(x => x.p >= 0.4 && x.p <= 0.85).sort((x, y) => y.p - x.p).map(x => `<tr><td>${esc(x.label)}${x.odd ? ` <span class="muted small">(cote ${fmtOdd(x.odd)})</span>` : ''}</td><td class="num">${pct(x.p)}</td><td class="num">${fmtOdd(needOdd(x))}</td></tr>`).join('')}</table>`)}
+    ${sec('🔢 Autres paris jouables', `${bookLine}<p class="small muted">Seulement les paris probables (45 % et plus) qui peuvent être payés 1,40 ou plus. « Jouable dès » : la cote minimale à trouver chez votre bookmaker.</p><table><tr><th>Pari</th><th class="num">Chance</th><th class="num">Jouable dès</th></tr>${a.markets.filter(x => x.p >= 0.45 && x.p <= 0.71).sort((x, y) => y.p - x.p).slice(0, 6).map(x => `<tr><td>${esc(x.label)}${x.odd ? ` <span class="muted small">(cote ${fmtOdd(x.odd)})</span>` : ''}</td><td class="num">${pct(x.p)}</td><td class="num">${fmtOdd(needOdd(x))}</td></tr>`).join('')}</table>`)}
     ${m.h2h && m.h2h.length ? sec('🤝 Confrontations directes', `<table>${m.h2h.map(g => `<tr><td class="small muted">${new Date(g.date).toLocaleDateString('fr-FR')}</td><td>${esc(g.home)} – ${esc(g.away)}</td><td class="num"><b>${esc(g.score)}</b></td></tr>`).join('')}</table>`) : ''}
   </div>`;
 }
@@ -1012,7 +1116,7 @@ function detailHtml(m, a) {
 const KEY_LABEL = {
   '1': 'Victoire à domicile', 'N': 'Match nul', '2': 'Victoire à l\'extérieur', '1N': 'Domicile ou nul', 'N2': 'Extérieur ou nul',
   O15: 'Plus de 1,5 buts', O25: 'Plus de 2,5 buts', U25: 'Moins de 2,5 buts', O35: 'Plus de 3,5 buts', U15: 'Moins de 1,5 but',
-  O45: 'Plus de 4,5 buts', H3G: 'Domicile marque 3+', A3G: 'Extérieur marque 3+',
+  O45: 'Plus de 4,5 buts', 'H3+': 'Domicile gagne par 3+', 'A3+': 'Extérieur gagne par 3+', H3G: 'Domicile marque 3+', A3G: 'Extérieur marque 3+', BTTSO25: 'Les deux marquent + plus de 2,5',
   BTTS: 'Les deux équipes marquent', NBTTS: 'Une équipe ne marque pas', H2G: 'Domicile marque 2+', A2G: 'Extérieur marque 2+',
   'H2+': 'Domicile gagne par 2+', 'A2+': 'Extérieur gagne par 2+', '1O25': 'Domicile gagne + plus de 2,5', '2O25': 'Extérieur gagne + plus de 2,5',
   '1BTTS': 'Domicile gagne + les deux marquent', '2BTTS': 'Extérieur gagne + les deux marquent', '1CS': 'Domicile gagne sans encaisser', '2CS': 'Extérieur gagne sans encaisser',

@@ -207,6 +207,47 @@ export function espnTeamGoals(summaryJson, espnTeamId) {
   return { gf: +me.score || 0, scorers };
 }
 
+// Résultat d'un match joué vu par une équipe : { venue, oppId, opp, gf, ga }
+export function espnTeamResult(summaryJson, espnTeamId) {
+  const comps = (summaryJson.header && summaryJson.header.competitions && summaryJson.header.competitions[0] && summaryJson.header.competitions[0].competitors) || [];
+  const me = comps.find(c => String(c.team.id) === String(espnTeamId)), op = comps.find(c => String(c.team.id) !== String(espnTeamId));
+  if (!me || !op) return null;
+  return { venue: me.homeAway, oppId: String(op.team.id), opp: op.team.displayName, gf: +me.score || 0, ga: +op.score || 0 };
+}
+
+// ---------- Forme pondérée : les résultats comparés au niveau des adversaires ----------
+// Points qu'on pouvait attendre face à un adversaire (forces S de domesticLevel, avantage du terrain compris)
+export function expectedPoints(selfS, oppS, venue) {
+  const e = (selfS - oppS) / 10 + (venue === 'home' ? 0.35 : -0.35);
+  return 3 * 0.74 / (1 + Math.exp(-e)) + 0.26;
+}
+// list : [{ venue, opp, gf, ga, oppS }] du plus récent au plus ancien ; selfS : force de l'équipe
+// Renvoie { form: 'VNDDV', delta, label, text } — delta = points obtenus − points attendus
+// selfRank : classement de l'équipe dans son championnat — les cadors (top 4) ne sont jamais en « forme flatteuse » :
+// battre des équipes plus faibles, c'est leur quotidien
+export function weightedForm(name, list, selfS, selfRank = null) {
+  const l = (list || []).filter(x => x.oppS != null).slice(0, 5);
+  if (l.length < 3 || selfS == null) return null;
+  const res = x => x.gf > x.ga ? 'V' : x.gf === x.ga ? 'N' : 'D';
+  const pts = x => x.gf > x.ga ? 3 : x.gf === x.ga ? 1 : 0;
+  const delta = l.reduce((s, x) => s + pts(x) - expectedPoints(selfS, x.oppS, x.venue), 0);
+  const tier = x => x.oppS >= selfS + 6 ? 'plus forts' : x.oppS <= selfS - 6 ? 'plus faibles' : 'de son niveau';
+  const losses = l.filter(x => res(x) === 'D'), wins = l.filter(x => res(x) === 'V');
+  const names = arr => arr.map(x => x.opp).join(', ');
+  let label = '', text = '';
+  if (losses.length >= 2 && losses.every(x => tier(x) === 'plus forts')) {
+    label = 'défaites logiques'; text = `${losses.length} défaite${losses.length > 1 ? 's' : ''} sur ${l.length}, mais contre des adversaires plus forts (${names(losses)}) : à relativiser`;
+  } else if (losses.length >= 2 && losses.filter(x => tier(x) === 'plus faibles').length >= 2) {
+    label = 'inquiétante'; text = `a perdu contre des adversaires plus faibles (${names(losses.filter(x => tier(x) === 'plus faibles'))}) : vraie mauvaise passe`;
+  } else if (wins.length >= 3 && wins.every(x => tier(x) === 'plus faibles') && delta < 2 && (!selfRank || selfRank >= 5)) {
+    label = 'flatteuse'; text = `${wins.length} victoires, mais toutes contre des adversaires plus faibles (${names(wins)}) : forme flatteuse`;
+  } else if (wins.length >= 2 && wins.filter(x => tier(x) === 'plus forts').length >= 2) {
+    label = 'solide'; text = `a battu des adversaires plus forts (${names(wins.filter(x => tier(x) === 'plus forts'))}) : vraie bonne forme`;
+  } else if (delta >= 3) { label = 'au-dessus'; text = 'résultats au-dessus de ce que son calendrier laissait attendre'; }
+  else if (delta <= -3) { label = 'en dessous'; text = 'résultats en dessous de ce que son calendrier laissait attendre'; }
+  return { form: l.map(res).join(''), delta, label, text, games: l.map(x => ({ opp: x.opp, r: res(x), score: `${x.gf}-${x.ga}`, tier: tier(x) })) };
+}
+
 // Effectif ESPN d'une équipe : poste et nombre de matchs joués cette saison
 export function espnSquad(rosterJson) {
   return (rosterJson.athletes || []).map(a => {
@@ -275,6 +316,8 @@ const FDC_ALIASES = [
   [/^qpr$/, 'queens park rangers'], [/^west brom$/, 'west bromwich albion'], [/^wolves$/, 'wolverhampton'], [/^leverkusen$/, 'bayer leverkusen'],
   [/^dortmund$/, 'borussia dortmund'], [/^st etienne$/, 'saint etienne'], [/^st pauli$/, 'sankt pauli'], [/^for sittard$/, 'fortuna sittard'],
   [/^inter$/, 'inter milan'], [/^milan$/, 'ac milan'], [/^roma$/, 'as roma'], [/^verona$/, 'hellas verona'],
+  // Japon
+  [/^urawa reds$/, 'urawa red diamonds'], [/^verdy$/, 'tokyo verdy 1969'], [/^chiba$/, 'jef united ichihara chiba'],
 ];
 const fdcName = n => { const s = norm(n); const a = FDC_ALIASES.find(([re]) => re.test(s)); return a ? a[1] : s; };
 
@@ -306,8 +349,20 @@ function oddsToLambdas(r, pre = 'Avg') {
 const fdcDate = s => { const [d, m, y] = String(s || '').split('/'); return Date.parse(`${y.length === 2 ? '20' + y : y}-${m}-${d}T12:00:00Z`); };
 
 // Saison d'un championnat : par équipe, buts, xG et « buts attendus selon le marché », à domicile et à l'extérieur
+// Championnats du « nouveau » format de football-data.co.uk (un fichier par pays, toutes saisons) :
+// résultats et cotes de clôture, sans xG — de quoi calculer la note du marché de chaque équipe
+export const FDCOUK_NEW = { 98: 'JPN' };
+export function fdcoukNewRows(csvText) {
+  const rows = parseCsv(csvText).filter(r => r.Home && r.HG !== '' && r.HG != null);
+  const season = rows.reduce((s, r) => (r.Season > s ? r.Season : s), '');   // saison en cours = la plus récente
+  return rows.filter(r => r.Season === season).map(r => ({
+    Date: r.Date, HomeTeam: r.Home, AwayTeam: r.Away, FTHG: r.HG, FTAG: r.AG,
+    AvgH: r.AvgCH, AvgD: r.AvgCD, AvgA: r.AvgCA, B365H: r.B365CH, B365D: r.B365CD, B365A: r.B365CA,
+  }));
+}
+
 export function fdcoukCompetition(csvText, beforeTime = Infinity) {
-  const rows = parseCsv(csvText).filter(r => r.HomeTeam && r.FTHG !== '' && r.FTHG != null && fdcDate(r.Date) < beforeTime);
+  const rows = (Array.isArray(csvText) ? csvText : parseCsv(csvText)).filter(r => r.HomeTeam && r.FTHG !== '' && r.FTHG != null && fdcDate(r.Date) < beforeTime);
   const teams = new Map();
   const zero = () => ({ p: 0, gf: 0, ga: 0, xp: 0, xgf: 0, xga: 0, mp: 0, mgf: 0, mga: 0 });
   const get = n => { if (!teams.has(n)) teams.set(n, { name: fdcName(n), shortName: n, home: zero(), away: zero() }); return teams.get(n); };
@@ -376,7 +431,7 @@ export const ESPN_CODES = {
   140: 'esp.1', 143: 'esp.copa_del_rey', 135: 'ita.1', 137: 'ita.coppa_italia', 78: 'ger.1', 79: 'ger.2', 81: 'ger.dfb_pokal',
   88: 'ned.1', 94: 'por.1', 144: 'bel.1', 207: 'sui.1', 203: 'tur.1', 179: 'sco.1', 218: 'aut.1', 197: 'gre.1', 119: 'den.1',
   2: 'uefa.champions', 3: 'uefa.europa', 848: 'uefa.europa.conf',
-  283: 'rou.1', 318: 'cyp.1', 307: 'ksa.1',
+  283: 'rou.1', 318: 'cyp.1', 307: 'ksa.1', 98: 'jpn.1',
 };
 
 const espnTeam = t => ({ id: 'espn-' + t.id, name: t.displayName || t.name, shortName: t.shortDisplayName || t.name, tla: t.abbreviation });
@@ -533,7 +588,8 @@ export function tipResult(key, h, a) {
   const t = h + a;
   const rules = {
     '1': h > a, 'N': h === a, '2': a > h, '1N': h >= a, 'N2': a >= h,
-    O15: t > 1.5, O25: t > 2.5, U25: t < 2.5, O35: t > 3.5, U15: t < 1.5, O45: t > 4.5, H3G: h >= 3, A3G: a >= 3,
+    O15: t > 1.5, O25: t > 2.5, U25: t < 2.5, O35: t > 3.5, U15: t < 1.5, O45: t > 4.5, H3G: h >= 3, A3G: a >= 3, 'H3+': h - a >= 3, 'A3+': a - h >= 3, BTTSO25: h > 0 && a > 0 && t > 2.5,
+    '1NU35': h >= a && t < 3.5, 'N2U35': a >= h && t < 3.5, '1NO15': h >= a && t > 1.5, 'N2O15': a >= h && t > 1.5,
     BTTS: h > 0 && a > 0, NBTTS: h === 0 || a === 0, H2G: h >= 2, A2G: a >= 2,
     'H2+': h - a >= 2, 'A2+': a - h >= 2, '1O25': h > a && t > 2.5, '2O25': a > h && t > 2.5,
     '1BTTS': h > a && a > 0, '2BTTS': a > h && h > 0, '1CS': h > a && a === 0, '2CS': a > h && h === 0,
@@ -561,7 +617,7 @@ export const LEAGUE_LEVEL = {
   'sco.1': ['Premiership', 1, 68], 'gre.1': ['Super League', 1, 68], 'aut.1': ['Bundesliga autrichienne', 1, 68], 'sui.1': ['Super League suisse', 1, 66],
   'den.1': ['Superliga', 1, 64], 'cze.1': ['Tchéquie', 1, 62], 'nor.1': ['Norvège', 1, 60], 'swe.1': ['Suède', 1, 58], 'pol.1': ['Pologne', 1, 60],
   'ukr.1': ['Ukraine', 1, 62], 'cro.1': ['Croatie', 1, 58], 'srb.1': ['Serbie', 1, 58], 'isr.1': ['Israël', 1, 54], 'ksa.1': ['Arabie saoudite', 1, 60],
-  'rou.1': ['Roumanie', 1, 56], 'cyp.1': ['Chypre', 1, 54], 'eng.3': ['League One', 3, 58], 'eng.4': ['League Two', 4, 50],
+  'rou.1': ['Roumanie', 1, 56], 'cyp.1': ['Chypre', 1, 54], 'jpn.1': ['J1 League', 1, 60], 'eng.3': ['League One', 3, 58], 'eng.4': ['League Two', 4, 50],
   'fra.3': ['National', 3, 46], 'ger.3': ['3. Liga', 3, 52], 'esp.3': ['Primera RFEF', 3, 46], 'ita.3': ['Serie C', 3, 46],
 };
 
@@ -574,12 +630,14 @@ export function domesticLevel(teamJson) {
   (((t.record && t.record.items) || [])[0]?.stats || []).forEach(s => { st[s.name] = s.value; });
   const rankM = /^(\d+)/.exec(t.standingSummary || '');
   const gp = st.gamesPlayed || 0;
-  // Force : niveau du championnat + différence de buts par match (bornée)
+  // Force de l'ÉQUIPE : le championnat ne compte que pour 40 % ; le reste vient de ce que fait l'équipe
+  // (différence de buts par match, classement). Un cador d'un championnat un peu moins fort reste un cador.
   const gd = gp ? (st.pointsFor - st.pointsAgainst) / gp : 0;
-  const coef = L ? L[2] : 50;
+  const coef = L ? L[2] : 50, rank = rankM ? +rankM[1] : (st.rank || null);
+  const rankBonus = rank ? (rank <= 2 ? 6 : rank <= 4 ? 4 : rank <= 8 ? 1 : rank >= 15 ? -3 : 0) : 0;
   return {
-    slug, league: L ? L[0] : t.defaultLeague.name, div: L ? L[1] : null, rank: rankM ? +rankM[1] : (st.rank || null), coef,
-    S: coef + Math.max(-12, Math.min(12, 6 * gd)), gp,
+    slug, league: L ? L[0] : t.defaultLeague.name, div: L ? L[1] : null, rank, coef,
+    S: 48 + 0.4 * coef + 10 * Math.max(-1.5, Math.min(1.5, gd)) + rankBonus, gp,
     home: { p: st.homeGamesPlayed || 0, gf: st.homePointsFor || 0, ga: st.homePointsAgainst || 0, w: st.homeWins || 0 },
     away: { p: st.awayGamesPlayed || 0, gf: st.awayPointsFor || 0, ga: st.awayPointsAgainst || 0, w: st.awayWins || 0 },
     gf: st.pointsFor || 0,
@@ -589,7 +647,7 @@ export function domesticLevel(teamJson) {
 // Équipe d'un championnat non couvert par ESPN (petits pays) : niveau modeste par défaut, sans bilan
 export function unknownLevel() {
   const none = { p: 0, gf: 0, ga: 0, w: 0 };
-  return { slug: null, league: 'championnat non suivi', div: null, rank: null, coef: 55, S: 55, gp: 0, home: none, away: none, gf: 0, unknown: true };
+  return { slug: null, league: 'championnat non suivi', div: null, rank: null, coef: 55, S: 48 + 0.4 * 55 + 2, gp: 0, home: none, away: none, gf: 0, unknown: true };
 }
 // Nombre de matchs sur lesquels reposent les stats (en coupe : le plus grand entre compétition et championnat)
 export function statGames(m) {
@@ -613,6 +671,51 @@ export function levelGap(m) {
   const text = `🏆 ${m.comp.type === 'europe' ? 'Coupe d\'Europe' : 'Coupe'} · ${head} : ${desc(h, m.home.name)} contre ${desc(a, m.away.name)}.`
     + (size === 'faible' ? ' Niveau proche en coupe : risque de surprise élevé.' : ` ${fav} a nettement plus de niveau${size === 'moyen' ? ', mais la coupe réserve des surprises' : ''}.`);
   return { gap, size, text, warn: size === 'faible' };
+}
+
+// ---------- Profil de jeu d'une équipe ----------
+// À partir de ses chiffres (buts, xG, tirs cadrés, possession) comparés à la moyenne de son championnat,
+// dans le contexte du match (à domicile pour l'une, à l'extérieur pour l'autre).
+// Renvoie { att, def, tags: [textes courts], xgNote } — att / def : 1 = moyenne du championnat
+export function teamProfile(m, side) {
+  const s = m.domStats || m.stats, ts = (m.domTeamStats || m.teamStats || {})[side];
+  if (!s || !s[side] || !s[side].p) return null;
+  const home = side === 'home';
+  const avgFor = home ? s.avgHome : s.avgAway, avgAg = home ? s.avgAway : s.avgHome;
+  const v = s[side], gf = v.gf / v.p, ga = v.ga / v.p;
+  const att = avgFor ? gf / avgFor : 1, def = avgAg ? ga / avgAg : 1;
+  const where = home ? 'à domicile' : 'à l\'extérieur';
+  const f1 = x => x.toFixed(1).replace('.', ',');
+  const tags = [];
+  if (v.p >= 3) {
+    if (att >= 1.3) tags.push(`attaque redoutable ${where} (${f1(gf)} buts/match)`);
+    else if (att <= 0.75) tags.push(`attaque en panne ${where} (${f1(gf)} but/match)`);
+    if (def <= 0.75) tags.push(`défense solide ${where} (${f1(ga)} encaissé/match)`);
+    else if (def >= 1.3) tags.push(`défense fragile ${where} (${f1(ga)} encaissés/match)`);
+  }
+  // Domicile / extérieur : écart de différence de buts par match
+  if (ts && ts.home && ts.away && ts.home.p >= 2 && ts.away.p >= 2) {
+    const gdH = (ts.home.gf - ts.home.ga) / ts.home.p, gdA = (ts.away.gf - ts.away.ga) / ts.away.p;
+    if (gdH - gdA >= 1.2) tags.push(home ? 'forteresse à domicile' : 'beaucoup moins forte loin de chez elle');
+    else if (gdA - gdH >= 0.6) tags.push(home ? 'curieusement meilleure à l\'extérieur' : 'aussi forte à l\'extérieur qu\'à domicile');
+  }
+  // Style : possession et tirs cadrés sur les derniers matchs
+  const p = m.perf && m.perf[side];
+  if (p && p.poss) {
+    if (p.poss >= 58) tags.push(`fait le jeu (${Math.round(p.poss)} % de possession)`);
+    else if (p.poss <= 42) tags.push(`joue en bloc / en contre (${Math.round(p.poss)} % de possession)`);
+  }
+  // Efficacité : buts réels comparés aux xG (occasions) — un écart finit souvent par se résorber
+  let xgNote = null;
+  const x = !m.domStats && m.xg && m.xg[side];
+  if (x && x.p >= 3) {
+    const dF = gf - x.gf / x.p, dA = ga - x.ga / x.p;
+    if (dF >= 0.4) xgNote = `efficace : marque plus que ses occasions (xG ${f1(x.gf / x.p)})`;
+    else if (dF <= -0.4) xgNote = `maladroite : se crée ${f1(x.gf / x.p)} xG par match mais marque moins, ça peut tourner`;
+    if (dA <= -0.4) xgNote = (xgNote ? xgNote + ' ; ' : '') + `encaisse moins que les occasions adverses (xG contre ${f1(x.ga / x.p)})`;
+    else if (dA >= 0.4) xgNote = (xgNote ? xgNote + ' ; ' : '') + `encaisse plus que les occasions adverses : malchance derrière`;
+  }
+  return { att, def, gf, ga, n: v.p, where, tags, xgNote };
 }
 
 // ---------- Tireurs de penalty ----------

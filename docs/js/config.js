@@ -44,6 +44,8 @@ export const COMPETITIONS = [
   { af: 327, name: 'Erovnuli Liga', country: 'Géorgie', flag: '🇬🇪', type: 'league' },
   { af: 362, name: 'A Lyga', country: 'Lituanie', flag: '🇱🇹', type: 'league' },
   { af: 365, name: 'Virsliga', country: 'Lettonie', flag: '🇱🇻', type: 'league' },
+  // Japon (ajouté le 21/10) : stats, buteurs, compos via ESPN ; note du marché via football-data.co.uk
+  { af: 98, name: 'J1 League', country: 'Japon', flag: '🇯🇵', type: 'league' },
 ];
 
 export const compByAf = Object.fromEntries(COMPETITIONS.map(c => [c.af, c]));

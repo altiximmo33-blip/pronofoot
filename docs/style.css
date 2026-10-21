@@ -409,3 +409,8 @@ tr.value td { background: var(--value-soft); }
 .pl.new { background: #fde68a; }
 .pl i { display: block; font-style: normal; font-weight: 600; font-size: 9px; color: #92400e; }
 @media (max-width: 520px) { .pitches { grid-template-columns: 1fr; } .c-plan { padding-left: 14px; } .reading { margin: 0 10px 10px; } }
+.reading .angles { margin: 4px 0 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13.5px; }
+.reading .angles small { font-size: 12px; }
+.reading .step { margin-top: 10px; color: var(--accent); }
+.reading .kp { font-size: 14px; font-weight: 600; margin: 6px 0 0; }
+.c-plan { font-weight: 500; }
