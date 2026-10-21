@@ -195,6 +195,18 @@ export function espnStartersWithLine(summaryJson, espnTeamId) {
   return xi.length >= 11 ? xi : null;
 }
 
+// Buts d'une équipe dans le résumé d'un match joué : { gf, scorers: [noms] } (contre-son-camp exclus des buteurs)
+export function espnTeamGoals(summaryJson, espnTeamId) {
+  const comp = (summaryJson.header && summaryJson.header.competitions && summaryJson.header.competitions[0]) || {};
+  const me = (comp.competitors || []).find(c => String(c.team.id) === String(espnTeamId));
+  if (!me) return null;
+  const scorers = (summaryJson.keyEvents || [])
+    .filter(e => e.scoringPlay && e.team && String(e.team.id) === String(espnTeamId) && !/own goal/i.test((e.type && e.type.text) || '') && !e.shootout)
+    .map(e => (e.participants && e.participants[0] && e.participants[0].athlete && e.participants[0].athlete.displayName) || '')
+    .filter(Boolean);
+  return { gf: +me.score || 0, scorers };
+}
+
 // Effectif ESPN d'une équipe : poste et nombre de matchs joués cette saison
 export function espnSquad(rosterJson) {
   return (rosterJson.athletes || []).map(a => {
@@ -209,27 +221,12 @@ export function rotationText(m, pres, side) {
   const r = pres && pres.rotation;
   if (!r || !r.changes) return null;
   const team = m[side].name;
-  const who = list => list.map(o => `${o.n}${o.bench ? ' (banc)' : ''}`).join(', ');
-  const def = r.out.filter(o => o.l === 'G' || o.l === 'D'), att = r.out.filter(o => o.l === 'F'), mid = r.out.filter(o => o.l === 'M');
-  const effects = [];
-  if (def.length) effects.push(`${def.length} en défense (${who(def)}) : défense moins rodée, risque de buts encaissés`);
-  if (att.length) effects.push(`${att.length} en attaque (${who(att)}) : peut-être moins de buts`);
-  if (mid.length) effects.push(`${mid.length} au milieu (${who(mid)}) : moins de maîtrise du jeu`);
-  const other = r.out.filter(o => !o.l);
-  if (other.length) effects.push(`${who(other)}`);
-  // Les entrants : peu de matchs cette saison, ou joueurs expérimentés
-  const known = r.inn.filter(x => x.apps != null);
-  const rookies = known.filter(x => x.apps <= 2), pros = known.filter(x => x.apps >= 8);
-  const entrants = [
-    rookies.length ? `entrants peu utilisés : ${rookies.map(x => `${x.n} (${x.apps} match${x.apps > 1 ? 's' : ''} cette saison)`).join(', ')}` : '',
-    pros.length ? `entrants expérimentés : ${pros.map(x => `${x.n} (${x.apps} matchs)`).join(', ')}` : '',
-  ].filter(Boolean).join(' ; ');
-  const base = r.of > 1 ? `titulaires habituels (au moins ${Math.ceil(r.of * 0.6)} des ${r.of} derniers matchs)` : 'titulaires du dernier match';
-  const head = r.changes >= 4 ? `🔄 Gros turn-over chez ${team} : ${r.changes} ${base} absents de la compo` : `🔎 ${team} sans ${r.changes > 1 ? 'des' : 'un de ses'} ${base}`;
+  const who = r.out.map(o => `${o.n}${o.bench ? ' (banc)' : ''}`).join(', ');
+  const base = r.of > 1 ? 'titulaire' + (r.changes > 1 ? 's' : '') + ' habituel' + (r.changes > 1 ? 's' : '') : 'titulaire' + (r.changes > 1 ? 's' : '') + ' du dernier match';
   return {
-    level: r.changes >= 3 || def.length >= 2 || att.length >= 1 ? 'bad' : 'info',
-    short: `${team} : ${r.changes} changement${r.changes > 1 ? 's' : ''}${def.length ? `, ${def.length} en défense` : ''}${att.length ? `, ${att.length} en attaque` : ''}`,
-    long: `${head} : ${effects.join(' ; ')}${entrants ? `. ${entrants[0].toUpperCase() + entrants.slice(1)}` : ''}. Source : compo officielle.`,
+    level: r.changes >= 3 ? 'bad' : 'info',
+    short: `${team} sans ${r.changes} ${base} : ${who}`,
+    long: r.changes >= 4 ? `🔄 Gros turn-over chez ${team} : ${r.changes} ${base} absents (${who})` : `👥 ${team} sans ${r.changes} ${base} : ${who}`,
   };
 }
 
@@ -536,7 +533,7 @@ export function tipResult(key, h, a) {
   const t = h + a;
   const rules = {
     '1': h > a, 'N': h === a, '2': a > h, '1N': h >= a, 'N2': a >= h,
-    O15: t > 1.5, O25: t > 2.5, U25: t < 2.5, O35: t > 3.5, U15: t < 1.5,
+    O15: t > 1.5, O25: t > 2.5, U25: t < 2.5, O35: t > 3.5, U15: t < 1.5, O45: t > 4.5, H3G: h >= 3, A3G: a >= 3,
     BTTS: h > 0 && a > 0, NBTTS: h === 0 || a === 0, H2G: h >= 2, A2G: a >= 2,
     'H2+': h - a >= 2, 'A2+': a - h >= 2, '1O25': h > a && t > 2.5, '2O25': a > h && t > 2.5,
     '1BTTS': h > a && a > 0, '2BTTS': a > h && h > 0, '1CS': h > a && a === 0, '2CS': a > h && h === 0,

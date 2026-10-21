@@ -297,12 +297,19 @@ function combosHtml(list) {
   // Buteurs regroupés par match : une ligne par match, avec ses options (buteurs seuls, puis « X ou Y » double chance)
   const scorers = list.filter(m => m.status === 'NS' && m.stats && state.analyses[m.id]).map(m => {
     const a = state.analyses[m.id];
-    const singles = [...a.scorers.home, ...a.scorers.away].filter(p => p.p1 >= 0.3).sort((x, y) => y.p1 - x.p1).slice(0, 2).map(p => {
+    // Pas de buteur dans un match fermé, ni dans une équipe qui ne devrait pas marquer
+    if (a.verdict.profile === 'ferme') return null;
+    const scoring = sd => (sd === 'home' ? a.lh : a.la) >= 1.2;
+    const pool = [...(scoring('home') ? a.scorers.home : []), ...(scoring('away') ? a.scorers.away : [])];
+    const singles = pool.filter(p => p.p1 >= 0.3).sort((x, y) => y.p1 - x.p1).slice(0, 3).map(p => {
       const pen = ['home', 'away'].map(s => penInfo(m, s)).some(x => x && x.main && lastName(x.main.name) === lastName(p.name));
-      return { label: `${p.name} buteur`, p: p.p1, info: `${p.team} · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} match${p.played > 1 ? 's' : ''}` : ''}${p.status === 'titulaire' ? ' · titulaire ✓' : ''}${pen ? ' · 🎯 penalties' : ''}` };
+      return { label: `${p.name} buteur${p.hot ? ' 🔥' : ''}`, p: p.p1, info: `${p.team}${p.goals ? ` · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} match${p.played > 1 ? 's' : ''}` : ''}` : ''}${p.hot ? ` · ${p.recent} buts sur ses ${p.recentGames} derniers matchs` : ''}${p.status === 'titulaire' ? ' · titulaire ✓' : ''}${pen ? ' · 🎯 penalties' : ''}` };
     });
     const duo = a.tips.find(x => x.key === 'SCD');
-    const options = [...singles, ...(duo ? [{ label: `🎲 ${duo.label}`, p: duo.p, info: 'double chance : un des deux suffit' }] : [])];
+    const dbl = a.tips.find(x => x.key === 'SC2');
+    const options = [...singles,
+      ...(duo ? [{ label: `🎲 ${duo.label}`, p: duo.p, info: 'double chance : un des deux suffit' }] : []),
+      ...(dbl ? [{ label: `💥 ${dbl.label.replace(' (pari osé)', '')}`, p: dbl.p, info: 'beaucoup de buts attendus : pari osé, grosse cote' }] : [])];
     return options.length ? { m, options, best: Math.max(...options.map(o => o.p)), tip: { p: 1 } } : null;
   }).filter(Boolean).sort((x, y) => y.best - x.best).slice(0, 8).sort(byTime);
 
@@ -618,6 +625,7 @@ function compactHtml(m) {
     </button>
     ${liveHtml(m, t)}
     <div class="c-line">${t ? `<span>${esc(t.label)}${t.odd ? ` <span class="muted">· cote ${t.odd.toFixed(2).replace('.', ',')}</span>${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}` : ''}</span><b>${pct(t.p)}</b>` : `<span class="muted">${v.code === 'skip' ? 'Aucune piste retenue' : 'Pas de piste solide'}</span>`}</div>
+    ${!done && v.plan ? `<div class="c-plan">${esc(v.plan)}</div>` : ''}
     ${!done && v.reason ? `<div class="c-reason ${v.code}">${v.code === 'play' ? '✅' : v.code === 'watch' ? '⏳' : '✋'} ${esc(v.reason)}</div>` : ''}
     ${alertBoxHtml(infos)}${goodInfosHtml(infos)}
     <div class="c-chips">${chips}${favBtn}</div>
@@ -670,7 +678,12 @@ function cardHtml(m) {
         <ul class="tips">${tips.length ? tips.map(t => `<li class="${t.edge > 0.06 ? 'value' : ''}"><span>${esc(t.label)}${t.odd ? ` <span class="muted">· cote ${odd(t.odd)}</span>` : ''}${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}<small class="why">${esc(tipWhy(t, m, a))}</small></span><b>${pct(t.p)}</b>${t.key === 'SC2' ? '' : `<button class="tip-add${inPerso(m.id, t.key) ? ' on' : ''}" data-act="perso" data-key="${esc(t.key)}" aria-label="Ajouter à mon combiné">${inPerso(m.id, t.key) ? '✓' : '＋'}</button>`}</li>`).join('') : '<li class="empty">Rien de solide sur ce match.</li>'}</ul>
       </div>
     </div>
-    ${infos.length ? `<div class="card-infos">${alertBoxHtml(infos)}${goodInfosHtml(infos)}</div>` : ''}
+    ${readingHtml(m, a)}
+    ${(() => {
+      // Ce que la lecture du match dit déjà (turn-over, écart de niveau, buteurs) n'est pas répété en dessous
+      const rest = infos.filter(i => !/^(👥|🔄|🏆|Buteur à suivre|✓ .* titulaire \()/.test(i.t));
+      return rest.length ? `<div class="card-infos">${alertBoxHtml(rest)}${goodInfosHtml(rest)}</div>` : '';
+    })()}
     ${compareHtml(m, a)}
     ${detailHtml(m, a)}
     <div class="card-foot">
@@ -810,6 +823,12 @@ function tipWhy(t, m, a) {
   const H = m.home.name, A = m.away.name, tot = (a.lh + a.la).toFixed(1).replace('.', ',');
   const scoreH = Math.round((1 - Math.exp(-a.lh)) * 100), scoreA = Math.round((1 - Math.exp(-a.la)) * 100);
   if (t.key === 'O35') return `${tot} buts attendus : 4 buts ou plus dans ${pct(a.goalDist[3].p)} des cas.`;
+  if (t.key === 'O45') return `${tot} buts attendus : vrai festival possible, 5 buts ou plus dans ${pct(t.p)} des cas.`;
+  if (t.key === 'H3G') return `${H} devrait marquer environ ${a.lh.toFixed(1).replace('.', ',')} buts.`;
+  if (t.key === 'A3G') return `${A} devrait marquer environ ${a.la.toFixed(1).replace('.', ',')} buts.`;
+  if (['U25', 'U15'].includes(t.key)) return `Seulement ${tot} buts attendus : match fermé.`;
+  if (t.key === 'NBTTS') return `${a.lh < a.la ? H : A} a du mal à marquer (${(Math.min(a.lh, a.la)).toFixed(1).replace('.', ',')} but attendu).`;
+  if (t.key === 'SC' && t.hot) return `En forme : ${t.recent} buts sur ses ${t.recentGames} derniers matchs.`;
   if (['O25', 'O15'].includes(t.key)) return `${tot} buts attendus : 3 buts ou plus dans ${pct(a.goalDist[2].p + a.goalDist[3].p)} des cas.`;
   if (['U25', 'U15'].includes(t.key)) return `Seulement ${tot} buts attendus : deux équipes qui marquent peu.`;
   if (t.key === 'BTTS') return `${H} marque dans ${scoreH} % des cas, ${A} dans ${scoreA} %.`;
@@ -836,6 +855,102 @@ function tipWhy(t, m, a) {
   return `${H} ${pct(a.p.home)} · nul ${pct(a.p.draw)} · ${A} ${pct(a.p.away)}.`;
 }
 
+// --- Lecture du match : le profil, ce qui l'explique, et ce qu'on joue en conséquence ------------
+function readingHtml(m, a) {
+  const v = a.verdict, H = m.home.name, A = m.away.name;
+  // En coupe, les chiffres du championnat (plus de matchs) parlent davantage que ceux de la compétition
+  const s = m.domStats || m.stats, champ = !!m.domStats || m.statsSource === 'championnat';
+  const f = x => x.toFixed(1).replace('.', ',');
+  const out = [];
+  if (v.plan) out.push(`<b>${esc(v.plan)}</b>`);
+  if (s && s.home && s.away && s.home.p && s.away.p) {
+    out.push(`${champ ? 'En championnat, ' : ''}${esc(H)} marque ${f(s.home.gf / s.home.p)} et encaisse ${f(s.home.ga / s.home.p)} but par match à domicile ; ${esc(A)} marque ${f(s.away.gf / s.away.p)} et encaisse ${f(s.away.ga / s.away.p)} à l'extérieur.`);
+  }
+  const g = levelGap(m);
+  if (g) out.push(esc(g.text.replace(/^🏆\s*/, '')));
+  // Jeu réel, joueurs en forme, absences : uniquement ce qui pèse sur le match
+  const perfTxt = ['home', 'away'].map(sd => { const p = m.perf && m.perf[sd]; return p && p.label ? `${m[sd].name} ${p.label}` : ''; }).filter(Boolean);
+  if (perfTxt.length) out.push(`Sur le jeu : ${esc(perfTxt.join(', '))}.`);
+  const hot = [...a.presence.home.players, ...a.presence.away.players].filter(p => p.hot && p.status !== 'absent').slice(0, 3);
+  if (hot.length) out.push(`🔥 En forme : ${esc(hot.map(p => `${p.name} (${p.recent} buts sur ses ${p.recentGames} derniers matchs)`).join(', '))}.`);
+  const abs = ['home', 'away'].map(sd => rotationText(m, a.presence[sd], sd)).filter(Boolean).map(r => r.short);
+  const keyOut = [...a.presence.home.missing, ...a.presence.away.missing].filter(p => p.share >= 0.15 && p.status === 'absent').map(p => `${p.name} (${p.team})`);
+  if (abs.length) out.push(`👥 ${esc(abs.join(' ; '))}.`);
+  else if (keyOut.length) out.push(`⚠ Absent${keyOut.length > 1 ? 's' : ''} : ${esc(keyOut.join(', '))}.`);
+  const tips = [...a.tips].filter(t => t.key !== 'SC2' || v.profile === 'festival').slice(0, 4);
+  if (tips.length) out.push(`🎯 Ce qu'on joue : ${esc(tips.map(t => `${t.label} (${pct(t.p)})`).join(' · '))}.`);
+  return out.length ? `<div class="reading"><h4 class="sec-title">🧠 Lecture du match</h4>${out.map(x => `<p>${x}</p>`).join('')}</div>` : '';
+}
+
+// --- Compo dessinée sur un terrain ----------------------------------------------------
+// Profondeur (0 = gardien … 4 = attaque) et côté (0 = gauche … 4 = droite) d'un poste ESPN / API-Football
+function posDepth(pos) {
+  const p = String(pos || '').toUpperCase();
+  if (p === 'G' || p === 'GK') return 0;
+  if (/^(LWB|RWB|WB)/.test(p)) return 1.5;
+  if (p === 'D' || /^(CD|CB|SW|LB|RB)/.test(p)) return 1;
+  if (/^(DM|CDM)/.test(p)) return 2;
+  if (/^(AM|CAM)/.test(p)) return 3;
+  if (/^(LW|RW)$/.test(p)) return 3.5;
+  if (p === 'F' || /^(CF|ST|LF|RF|F-)/.test(p)) return 4;
+  return 2.5; // M, CM, LM, RM…
+}
+function posSide(pos) {
+  const p = String(pos || '').toUpperCase();
+  if (/-L$/.test(p)) return 1; if (/-R$/.test(p)) return 3;
+  if (/^L/.test(p)) return 0; if (/^R/.test(p)) return 4;
+  return 2;
+}
+// Range les 11 titulaires en lignes (formation « 4-3-3 » si connue), de la défense à l'attaque
+function pitchRows(xi, formation) {
+  const gk = xi.filter(p => posDepth(p.pos) === 0).slice(0, 1);
+  const field = xi.filter(p => !gk.includes(p)).map((p, i) => ({ ...p, i })).sort((a, b) => posDepth(a.pos) - posDepth(b.pos) || a.i - b.i);
+  const counts = String(formation || '').split('-').map(Number).filter(n => n > 0);
+  let rows = [];
+  if (counts.length >= 2 && counts.reduce((s, n) => s + n, 0) === field.length) {
+    let k = 0; rows = counts.map(n => { const r = field.slice(k, k + n); k += n; return r; });
+  } else {
+    const by = new Map();
+    field.forEach(p => { const d = Math.round(posDepth(p.pos)); by.set(d, [...(by.get(d) || []), p]); });
+    rows = [...by.keys()].sort().map(d => by.get(d));
+  }
+  return [gk, ...rows].map(r => [...r].sort((a, b) => posSide(a.pos) - posSide(b.pos)));
+}
+const shortName = n => { const w = String(n || '').trim().split(/\s+/); return w.length > 1 && w[w.length - 1].length > 2 ? w.slice(1).join(' ') : n; };
+
+// Équipe type (compo probable) : les 11 joueurs les plus souvent titulaires sur les derniers matchs
+function usualXI(m, side) {
+  const rec = m.recentXI && m.recentXI[side];
+  if (!rec || rec.length < 3) return null;
+  const cnt = new Map();
+  rec.forEach(xi => xi.forEach(p => { const c = cnt.get(p.n) || { name: p.n, pos: p.l, starts: 0 }; c.starts++; cnt.set(p.n, c); }));
+  const all = [...cnt.values()].sort((a, b) => b.starts - a.starts);
+  const gk = all.find(p => p.pos === 'G');
+  const xi = [gk, ...all.filter(p => p !== gk)].filter(Boolean).slice(0, 11);
+  return xi.length === 11 ? { xi, of: rec.length } : null;
+}
+
+function pitchHtml(m, a, side) {
+  const lu = m.lineups && m.lineups[side];
+  const official = lu && lu.status === 'officielle' && lu.startXI && lu.startXI.length >= 11;
+  const usual = official ? null : usualXI(m, side);
+  if (!official && !usual) return `<div class="pitch-wrap"><b>${esc(m[side].name)}</b><p class="small muted">Compo pas encore connue.</p></div>`;
+  const xi = official ? lu.startXI : usual.xi;
+  const pres = a.presence[side], rot = pres.rotation;
+  const hot = n => pres.players.find(p => p.hot && lastName(p.name) === lastName(n));
+  const pen = penInfo(m, side), taker = pen && pen.main ? lastName(pen.main.name) : null;
+  const isNew = n => official && rot && rot.inn.some(x => lastName(x.n) === lastName(n));
+  const rows = pitchRows(xi, official ? lu.formation : null).reverse();
+  const chip = p => `<span class="pl${isNew(p.name) ? ' new' : ''}">${esc(shortName(p.name))}${hot(p.name) ? ' 🔥' : ''}${taker && lastName(p.name) === taker ? ' 🎯' : ''}${isNew(p.name) ? '<i>hors équipe type</i>' : ''}</span>`;
+  return `<div class="pitch-wrap">
+    <div class="pitch-head"><b>${esc(m[side].name)}</b><span class="small muted">${official ? `${esc(lu.formation || '')} · officielle` : `équipe type (${usual.of} derniers matchs)`}</span></div>
+    <div class="pitch">${rows.map(r => `<div class="prow">${r.map(chip).join('')}</div>`).join('')}</div>
+    <p class="pitch-legend">🔥 en forme · 🎯 tireur de penalty${official ? ' · en jaune : hors équipe type' : ''}</p>
+    ${official && rot && rot.changes ? `<p class="small"><b>Absents de l'équipe type :</b> ${esc(rot.out.map(o => `${o.n}${o.bench ? ' (banc)' : ''}`).join(', '))}</p>` : ''}
+    ${official && lu.subs && lu.subs.length ? `<p class="small muted">Banc : ${esc(lu.subs.map(p => shortName(p.name)).join(', '))}</p>` : ''}
+  </div>`;
+}
+
 // Le détail, en rubriques repliées : on n'ouvre que ce qu'on veut vérifier
 function detailHtml(m, a) {
   const H = m.home.name, A = m.away.name;
@@ -853,19 +968,11 @@ function detailHtml(m, a) {
   // Compositions et absents
   const hm = t => new Date(t).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
   const absList = side => ((m.injuries && m.injuries[side]) || []).map(i => `${i.name} (${reasonFr(i.reason) || 'absent'}${i.src ? ` · ${i.src}` : ''})`);
-  const lineup = side => {
-    const l = m.lineups && m.lineups[side];
-    const r = a.presence[side].rotation;
-    if (!l || !l.startXI) return `<div><b>${esc(m[side].name)}</b><p class="muted small">Pas encore disponible.</p></div>`;
-    return `<div><b>${esc(m[side].name)}</b> <span class="muted small">${esc(l.formation || '')} · ${l.status === 'officielle' ? 'officielle' : 'probable'}${r ? ` · ${r.changes} changement${r.changes > 1 ? 's' : ''} par rapport au dernier match` : ''}</span>
-      <p class="small">${l.startXI.map(p => esc(p.name)).join(', ')}</p>
-      ${l.subs && l.subs.length ? `<p class="small muted">Banc : ${l.subs.map(p => esc(p.name)).join(', ')}</p>` : ''}</div>`;
-  };
   const composBody = `${official ? `<p class="ok-line">✓ Analyse recalculée avec les compositions officielles${lu.source ? ` (${esc(lu.source)}${lu.at ? `, ${time(lu.at)}` : ''})` : ''}.</p>` : '<p class="muted small">Pas encore officielles : l\'analyse sera recalculée automatiquement dès leur sortie (à partir d\'1 h avant).</p>'}
     ${absList('home').length ? `<p class="small"><b>Absents ${esc(H)} :</b> ${esc(absList('home').join(', '))}</p>` : ''}
     ${absList('away').length ? `<p class="small"><b>Absents ${esc(A)} :</b> ${esc(absList('away').join(', '))}</p>` : ''}
     <p class="small muted">${m.injChecked ? `Absents vérifiés à ${hm(m.injChecked)} (API-Football), puis revérifiés 3 h et 1 h avant le match.` : 'Absents pas encore vérifiés : revérification automatique 3 h et 1 h avant le match.'} À la sortie des compos, tout titulaire habituel manquant est signalé, quel que soit son poste.</p>
-    <div class="lineups">${lineup('home')}${lineup('away')}</div>`;
+    <div class="pitches">${pitchHtml(m, a, 'home')}${pitchHtml(m, a, 'away')}</div>`;
 
   // Buteurs et probabilités
   const scorers = [...a.scorers.home, ...a.scorers.away].sort((x, y) => y.p1 - x.p1).slice(0, 6);
@@ -879,10 +986,10 @@ function detailHtml(m, a) {
   const pensHtml = pens.length ? `<ul class="c-infos flat">${pens.map(p => `<li class="${p.k}">${esc(p.t)}</li>`).join('')}</ul>` : '<p class="small muted">Tireurs de penalty pas encore connus pour ces équipes.</p>';
   return `
   <div class="detail">
-    ${scorers.length || pens.length ? sec('⚽ Buteurs et tireurs de penalty', `${pensHtml}<ul class="play-list">${scorers.map(p => `<li><div><b>${esc(p.name)}${takers.has(lastName(p.name)) ? ' 🎯' : ''}</b><span class="muted small">${esc(p.team)} · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} match${p.played > 1 ? 's' : ''}` : ''} · ${{ titulaire: 'titulaire ✓', remplacant: 'sur le banc', incertain: 'incertain', probable: 'compo pas encore connue' }[p.status] || ''}${p.p2 >= 0.1 ? ` · doublé ${pct(p.p2)}` : ''}</span></div><b class="p">${pct(p.p1)}</b></li>`).join('')}</ul>`) : ''}
-    ${sec(`👥 Compositions et absents${official ? ' <span class="chip ok">officielles</span>' : ''}`, composBody)}
+    ${sec(`👥 Compositions${official ? ' <span class="chip ok">officielles</span>' : ' <span class="chip">équipe type</span>'}`, composBody, true)}
+    ${scorers.length || pens.length ? sec('⚽ Buteurs et tireurs de penalty', `${pensHtml}<ul class="play-list">${scorers.map(p => `<li><div><b>${esc(p.name)}${takers.has(lastName(p.name)) ? ' 🎯' : ''}</b><span class="muted small">${esc(p.team)} · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} match${p.played > 1 ? 's' : ''}` : ''} · ${{ titulaire: 'titulaire ✓', remplacant: 'sur le banc', incertain: 'incertain', probable: 'compo pas encore connue' }[p.status] || ''}${p.hot ? ` · 🔥 ${p.recent} buts sur ses ${p.recentGames} derniers matchs` : ''}${p.p2 >= 0.1 ? ` · doublé ${pct(p.p2)}` : ''}</span></div><b class="p">${pct(p.p1)}</b></li>`).join('')}</ul>`) : ''}
     ${sec('📈 Forme, niveau des adversaires, fatigue', formBody + notes)}
-    ${sec('🔢 Probabilités (40 % et plus)', `${bookLine}${easy}<table>${a.markets.filter(x => x.p >= 0.4).sort((x, y) => y.p - x.p).map(x => `<tr><td>${esc(x.label)}</td><td class="num">${pct(x.p)}</td></tr>`).join('')}</table>`)}
+    ${sec('🔢 Probabilités utiles (40 à 80 %)', `${bookLine}${easy}<table>${a.markets.filter(x => x.p >= 0.4 && x.p <= 0.8).sort((x, y) => y.p - x.p).map(x => `<tr><td>${esc(x.label)}</td><td class="num">${pct(x.p)}</td></tr>`).join('')}</table>`)}
     ${m.h2h && m.h2h.length ? sec('🤝 Confrontations directes', `<table>${m.h2h.map(g => `<tr><td class="small muted">${new Date(g.date).toLocaleDateString('fr-FR')}</td><td>${esc(g.home)} – ${esc(g.away)}</td><td class="num"><b>${esc(g.score)}</b></td></tr>`).join('')}</table>`) : ''}
   </div>`;
 }
@@ -892,6 +999,7 @@ function detailHtml(m, a) {
 const KEY_LABEL = {
   '1': 'Victoire à domicile', 'N': 'Match nul', '2': 'Victoire à l\'extérieur', '1N': 'Domicile ou nul', 'N2': 'Extérieur ou nul',
   O15: 'Plus de 1,5 buts', O25: 'Plus de 2,5 buts', U25: 'Moins de 2,5 buts', O35: 'Plus de 3,5 buts', U15: 'Moins de 1,5 but',
+  O45: 'Plus de 4,5 buts', H3G: 'Domicile marque 3+', A3G: 'Extérieur marque 3+',
   BTTS: 'Les deux équipes marquent', NBTTS: 'Une équipe ne marque pas', H2G: 'Domicile marque 2+', A2G: 'Extérieur marque 2+',
   'H2+': 'Domicile gagne par 2+', 'A2+': 'Extérieur gagne par 2+', '1O25': 'Domicile gagne + plus de 2,5', '2O25': 'Extérieur gagne + plus de 2,5',
   '1BTTS': 'Domicile gagne + les deux marquent', '2BTTS': 'Extérieur gagne + les deux marquent', '1CS': 'Domicile gagne sans encaisser', '2CS': 'Extérieur gagne sans encaisser',

@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeMatch } from '../docs/js/model.js';
 import { compByAf } from '../docs/js/config.js';
-import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnScorers, espnStartersOf, espnRedCards, espnGoalScorers, scorerTipResult, failCause, espnPenalties, penTakers, espnStartersWithLine, espnSquad, rotationText, similarity, domesticLevel, unknownLevel, levelFactor, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot, FDCOUK_CODES, fdcoukCompetition, fdcoukForMatch, fdcoukUpcomingOdds } from '../docs/js/core.js';
+import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnScorers, espnStartersOf, espnRedCards, espnGoalScorers, scorerTipResult, failCause, espnPenalties, penTakers, espnStartersWithLine, espnSquad, rotationText, espnTeamGoals, similarity, domesticLevel, unknownLevel, levelFactor, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot, FDCOUK_CODES, fdcoukCompetition, fdcoukForMatch, fdcoukUpcomingOdds } from '../docs/js/core.js';
 
 const AF_KEY = process.env.APIFOOTBALL_KEY;
 const FD_KEY = process.env.FOOTBALLDATA_KEY;
@@ -389,16 +389,17 @@ async function enrichCups(matches, today) {
 }
 
 async function enrichEspn(matches, bilan, today) {
-  // Matchs européens des 5 derniers jours
+  // Matchs européens des 3 dernières semaines (fatigue, et équipe type toutes compétitions confondues)
   const euro = [];
-  for (let d = 1; d <= 5; d++) {
+  for (let d = 1; d <= 21; d++) {
     const day = ymd(Date.parse(today + 'T12:00:00Z') - d * 86400000);
     for (const [code, label] of Object.entries(UEFA)) {
       try {
         const sb = await espn(`${ESPN_SITE}${code}/scoreboard?dates=${day}`);
         for (const ev of sb.events || []) {
           const c = ev.competitions[0];
-          c.competitors.forEach(x => euro.push({ teamId: String(x.team.id), date: Date.parse(ev.date), comp: label, away: x.homeAway === 'away', opp: (c.competitors.find(y => y !== x) || {}).team?.displayName || '' }));
+          if (!c.status || !c.status.type || !c.status.type.completed) continue;
+          c.competitors.forEach(x => euro.push({ teamId: String(x.team.id), ev: ev.id, code, date: Date.parse(ev.date), comp: label, away: x.homeAway === 'away', opp: (c.competitors.find(y => y !== x) || {}).team?.displayName || '' }));
         }
       } catch { /* jour sans match */ }
     }
@@ -423,36 +424,53 @@ async function enrichEspn(matches, bilan, today) {
       mem.perf = mem.perf || [];
       let lastDate = 0;
       try {
-        schedules[code + espnId] = schedules[code + espnId] || await espn(`${ESPN_SITE}${code}/teams/${espnId}/schedule`);
-        const done = (schedules[code + espnId].events || [])
-          .filter(ev => ev.competitions && ev.competitions[0].status && ev.competitions[0].status.type.completed)
-          .sort((x, y) => Date.parse(y.date) - Date.parse(x.date));
-        if (done[0]) lastDate = Date.parse(done[0].date);
-        // Statistiques et onze de départ des 5 derniers matchs (déjà lus = gardés en mémoire)
-        mem.xis = mem.xis || [];
-        for (const ev of done.slice(0, 5)) {
-          const needPerf = !mem.perf.some(p => p.ev === ev.id), needXI = !mem.xis.some(x => x.ev === ev.id);
-          if (!needPerf && !needXI) continue;
+        // Derniers matchs TOUTES compétitions : championnat (+ championnat national pour une coupe) + coupes d'Europe
+        const codes = [...new Set([code, m.level && m.level[side] && m.level[side].slug].filter(Boolean))];
+        const evs = new Map();
+        for (const c of codes) {
           try {
-            const sum = await espn(`${ESPN_SITE}${code}/summary?event=${ev.id}`);
+            schedules[c + espnId] = schedules[c + espnId] || await espn(`${ESPN_SITE}${c}/teams/${espnId}/schedule`);
+            (schedules[c + espnId].events || [])
+              .filter(ev => ev.competitions && ev.competitions[0].status && ev.competitions[0].status.type.completed)
+              .forEach(ev => evs.set(ev.id, { id: ev.id, date: ev.date, code: c }));
+          } catch { /* calendrier indisponible */ }
+        }
+        euro.filter(e => e.teamId === String(espnId) && e.date < m.kickoff).forEach(e => { if (!evs.has(e.ev)) evs.set(e.ev, { id: e.ev, date: new Date(e.date).toISOString(), code: e.code }); });
+        const done = [...evs.values()].sort((x, y) => Date.parse(y.date) - Date.parse(x.date));
+        if (done[0]) lastDate = Date.parse(done[0].date);
+        // Statistiques (5 derniers), onze de départ et buteurs (8 derniers) : déjà lus = gardés en mémoire
+        mem.xis = mem.xis || []; mem.goals = mem.goals || [];
+        for (const [i, ev] of done.slice(0, 8).entries()) {
+          const needPerf = i < 5 && !mem.perf.some(p => p.ev === ev.id), needXI = !mem.xis.some(x => x.ev === ev.id), needGoals = !mem.goals.some(x => x.ev === ev.id);
+          if (!needPerf && !needXI && !needGoals) continue;
+          try {
+            const sum = await espn(`${ESPN_SITE}${ev.code}/summary?event=${ev.id}`);
             const st = needPerf && espnTeamMatchStats(sum, espnId);
             if (st) mem.perf.push({ ev: ev.id, date: ev.date, ...st });
             const xi = needXI && espnStartersWithLine(sum, espnId);
             if (xi) mem.xis.push({ ev: ev.id, date: ev.date, xi });
+            const g = needGoals && espnTeamGoals(sum, espnId);
+            if (g) mem.goals.push({ ev: ev.id, date: ev.date, ...g });
           } catch { /* match sans statistiques */ }
           await sleep(100);
         }
+        const recentIds = new Set(done.slice(0, 8).map(e => e.id));
         mem.perf = mem.perf.sort((x, y) => Date.parse(x.date) - Date.parse(y.date)).slice(-10);
-        mem.xis = mem.xis.sort((x, y) => Date.parse(y.date) - Date.parse(x.date)).slice(0, 5);
-        if (mem.xis.length >= 3) (m.recentXI = m.recentXI || {})[side] = mem.xis.map(x => x.xi);
-        // Onze de départ du dernier match (pour repérer un gros turn-over avec la compo officielle)
-        if (done[0] && (!mem.lastXI || mem.lastXI.ev !== done[0].id)) {
-          try {
-            const xi = espnStartersOf(await espn(`${ESPN_SITE}${code}/summary?event=${done[0].id}`), espnId);
-            if (xi) mem.lastXI = { ev: done[0].id, date: done[0].date, names: xi };
-          } catch { /* pas de composition pour ce match */ }
+        mem.xis = mem.xis.sort((x, y) => Date.parse(y.date) - Date.parse(x.date)).slice(0, 10);
+        mem.goals = mem.goals.sort((x, y) => Date.parse(y.date) - Date.parse(x.date)).slice(0, 10);
+        // Équipe type : onzes des 8 derniers matchs
+        const xis = mem.xis.filter(x => recentIds.has(x.ev));
+        if (xis.length >= 3) (m.recentXI = m.recentXI || {})[side] = xis.map(x => x.xi);
+        // Buteurs en forme : buts sur les 6 derniers matchs
+        const gl = mem.goals.filter(x => recentIds.has(x.ev)).slice(0, 6);
+        if (gl.length >= 3) {
+          const players = {};
+          gl.forEach(x => x.scorers.forEach(n => { players[n] = (players[n] || 0) + 1; }));
+          (m.recentGoals = m.recentGoals || {})[side] = { games: gl.length, teamGoals: gl.reduce((s, x) => s + x.gf, 0), players };
         }
-        if (mem.lastXI && done[0] && mem.lastXI.ev === done[0].id) (m.lastXI = m.lastXI || {})[side] = mem.lastXI.names;
+        // Onze de départ du dernier match (repère, quand l'équipe type n'est pas encore connue)
+        const last = mem.xis.find(x => done[0] && x.ev === done[0].id);
+        if (last) (m.lastXI = m.lastXI || {})[side] = last.xi.map(p => p.n);
       } catch (e) { console.warn(e.message); }
 
       // Forme réelle
