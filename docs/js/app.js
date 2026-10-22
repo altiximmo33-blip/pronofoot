@@ -123,7 +123,7 @@ function renderMatches() {
     return;
   }
   const visibleAll = all.filter(m => !state.hidden.has(m.id));
-  const top = (!q && !comp && !verdict) ? favHtml() + planHtml(visibleAll) + topHtml(visibleAll) + combosHtml(visibleAll) : '';
+  const top = (!q && !comp && !verdict) ? favHtml() + planHtml(visibleAll) : '';
   // Un match en cours reste à sa place (avec le score en direct) ; terminé, il passe dans la section du bas
   const upcoming = list.filter(m => !isFinished(m)), past = list.filter(isFinished);
   const final = m => { const s = state.live[m.id]; return s && s.state === 'post' ? s : null; };
@@ -323,7 +323,7 @@ function persoLegs() {
 
 // 💰 Plan du jour : deux petits combinés « faciles » (cote ≈ 3, sans match en commun)
 // et un gros coup (cote ≈ 400 à 600) pour tenter le gros gain avec une petite mise.
-const PLAN_STAKE = 5, SMALL_ODD = 2.8, BIG_ODD = 400, BIG_MAX = 14, PLAN_GAINS = [300, 400, 500];
+const PLAN_STAKE = 5, SMALL_ODD = 2.8, BIG_MAX = 14, PLAN_GAINS = [300, 500, 2000];
 const fairOdd = legs => legs.reduce((a, x) => a / x.tip.p, 1);
 function planDuJour(list) {
   const cand = list.filter(m => usable(m) && m.kickoff > Date.now()).map(m => {
@@ -336,7 +336,8 @@ function planDuJour(list) {
     const all = main.filter(x => x === safe || (x.p >= 0.5 && (x.solid || 0) >= 3));
     return safe ? { m, safe, all } : null;
   }).filter(Boolean);
-  const rank = (x, y) => (y.safe.solid || 0) - (x.safe.solid || 0) || y.safe.p - x.safe.p;
+  // Les compos officielles départagent deux pistes de même solidité
+  const rank = (x, y) => (y.safe.solid || 0) - (x.safe.solid || 0) || isOff(y.m) - isOff(x.m) || y.safe.p - x.safe.p;
   // Petits combinés : les pistes les plus solides (4/5 et plus), 2 ou 3 par combiné jusqu'à une cote d'environ 3
   const sure = cand.filter(c => (c.safe.solid || 0) >= 4).sort(rank);
   const smalls = [];
@@ -369,34 +370,94 @@ function planDuJour(list) {
     }
     return gapOf(fairOdd(legs)) <= Math.log(1.3) ? legs.sort(byTime) : [];
   };
-  // Paliers intermédiaires : gain visé de 300, 400, 500 € pour la mise (cote ≈ 60, 80, 100)
-  const tiers = PLAN_GAINS.map(g => ({ gain: g, legs: build(g / PLAN_STAKE) })).filter(t => t.legs.length);
-  const big = build(BIG_ODD);
-  return { smalls, tiers, big: big.length >= 6 ? big : [] };
+  // Gros coup : un seul combiné, pour le gain choisi (300 €, 500 € ou 2 000 € pour la mise)
+  const big = build(planGain / PLAN_STAKE);
+  return { smalls, big: big.length >= 5 ? big : [] };
+}
+
+// Compos officielles connues pour les deux équipes
+const isOff = m => !!(m.lineups && m.lineups.home && m.lineups.home.status === 'officielle' && m.lineups.away && m.lineups.away.status === 'officielle');
+// Gain visé par le gros coup (mémorisé sur le téléphone)
+let planGain = (() => { const v = +load('plan-gain', 500); return PLAN_GAINS.includes(v) ? v : 500; })();
+
+// ⏰ Spécial créneau : dans le prochain créneau chargé, un combiné qui MÉLANGE les angles
+// (un résultat, un match à buts, un buteur), une piste par match, compos officielles en priorité
+function mixLegs(matches, n) {
+  const opts = [];
+  for (const m of matches) {
+    const a = state.analyses[m.id];
+    if (!a || a.verdict.code === 'skip') continue;
+    for (const t of a.tips) {
+      const sc = String(t.key).startsWith('SC');
+      if (t.key === 'SC2' || (!sc && t.angle === 'derived')) continue;
+      // Buteur : titulaire seul s'il est bien placé (35 % et plus), sinon « X ou Y » si la double chance est belle (50 % et plus)
+      if (sc && !(t.key === 'SCD' ? t.p >= 0.5 : t.p >= 0.35 && (/titulaire/.test(t.label) || !isOff(m)))) continue;
+      if (!sc && (t.solid || 0) < 3) continue;
+      const kind = sc ? 'buteur' : t.angle === 'result' ? 'résultat' : 'buts';
+      opts.push({ m, tip: t, kind, score: (t.solid || 2) + t.p + (isOff(m) ? 0.5 : 0) });
+    }
+  }
+  opts.sort((x, y) => y.score - x.score);
+  const legs = [], used = new Set(), count = {}, cap = { 'résultat': 2, buts: 2, buteur: 1 };
+  const take = o => { legs.push(o); used.add(o.m.id); count[o.kind] = (count[o.kind] || 0) + 1; };
+  // D'abord un pari de chaque sorte, puis les plus solides
+  for (const kind of ['résultat', 'buts', 'buteur']) { const o = opts.find(o => o.kind === kind && !used.has(o.m.id)); if (o && legs.length < n) take(o); }
+  for (const o of opts) { if (legs.length >= n) break; if (!used.has(o.m.id) && (count[o.kind] || 0) < cap[o.kind]) take(o); }
+  return legs.sort(byTime);
 }
 function planHtml(list) {
   const P = planDuJour(list);
+  const up = list.filter(m => usable(m) && m.kickoff > Date.now());
   const pTxt = p => p >= 0.01 ? pct(p) : `${(p * 100).toFixed(2).replace('.', ',')} %`;
-  const li = x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span><small><b>${esc(x.tip.label)}</b>${x.tip.bold ? ' 🎲' : ''} · ${oddTxt(x.tip)}</small></span><b>${pct(x.tip.p)} ${solidTxt(x.tip)}</b></li>`;
-  const block = (title, legs, note) => {
-    const o = fairOdd(legs);
-    return `<div class="plan-block"><p class="step"><b>${title}</b> <span class="small muted">${esc(note)}</span></p>
-      <ul class="combo-mini">${legs.map(li).join('')}</ul>
-      <div class="combo-total"><span>${legs.length} sélections · <b>${pTxt(1 / o)}</b> de réussite</span><span>cote ≈ <b>${o.toFixed(o >= 100 ? 0 : 1).replace('.', ',')}</b> · ${PLAN_STAKE} € → <b>${Math.round(PLAN_STAKE * o).toLocaleString('fr-FR')} €</b></span></div></div>`;
-  };
-  const body = [
-    ...P.smalls.map((legs, k) => block(`${k ? '②' : '①'} Petit combiné facile`, legs, 'les pistes les plus solides du jour')),
-    ...P.tiers.map(t => block(`🎯 Objectif ${t.gain} €`, t.legs, `les pistes les plus solides, jusqu'à une cote d'environ ${Math.round(t.gain / PLAN_STAKE)}`)),
-    P.big.length ? block('🚀 Le gros coup', P.big, `pour le plaisir : il passe rarement, la mise est petite (🎲 = version audacieuse pour monter la cote)`) : '',
-  ].join('');
+  const euros = o => Math.round(PLAN_STAKE * o).toLocaleString('fr-FR');
+  // Une ligne par sélection : heure, match, pari, probabilité (✓ = compos officielles)
+  const li = x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}${isOff(x.m) ? ' <span class="ok-mark" title="Compos officielles">✓</span>' : ''}</span><small><b>${esc(x.tip.label)}</b>${x.tip.bold ? ' 🎲' : ''} · dès ${fmtOdd(needOdd(x.tip))}</small></span><b>${pct(x.tip.p)}</b></li>`;
+  const total = legs => { const o = fairOdd(legs); return `<div class="combo-total"><span><b>${pTxt(1 / o)}</b> de réussite</span><span>cote ≈ <b>${o.toFixed(o >= 100 ? 0 : 1).replace('.', ',')}</b> · ${PLAN_STAKE} € → <b>${euros(o)} €</b></span></div>`; };
+
+  // La journée en une ligne : vaut-elle un combiné ?
+  const solidN = up.filter(m => state.analyses[m.id].tips.some(t => !String(t.key).startsWith('SC') && (t.solid || 0) >= 4)).length;
+  const offN = up.filter(isOff).length;
+  const mood = solidN >= 8 ? '🔥 Grosse journée : de quoi faire un beau combiné'
+    : solidN >= 4 ? '👍 Journée correcte : petit combiné conseillé'
+    : solidN >= 2 ? '🤏 Journée calme : petit combiné seulement' : '✋ Peu de pistes solides : mieux vaut s\'abstenir';
+
+  // ⏰ Spécial créneau : le prochain créneau d'au moins 3 matchs
+  const slot = groupSlots(up).find(s => s.matches.length >= 3);
+  let slotCard = '';
+  if (slot) {
+    const legs = mixLegs(slot.matches, 4);
+    const off = slot.matches.filter(isOff).length, n = slot.matches.length;
+    const status = off === n ? '✓ Toutes les compos sont officielles : à jouer maintenant.'
+      : `⏳ Compos officielles : ${off}/${n}. Elles tombent environ 1 h avant (vers ${hhmmFr(slot.start - 3600000)}) ; le combiné se met à jour tout seul.`;
+    if (legs.length >= 2) slotCard = `<div class="combo-card best">
+      <div class="combo-card-head"><b>⏰ Spécial ${hhmmFr(slot.start)} · ${n} matchs</b><span class="small muted">Un pari par match, en mélangeant résultat, buts et buteur.</span></div>
+      <p class="small ${off === n ? 'go' : 'muted'}">${status}</p>
+      <ul class="combo-mini">${legs.map(li).join('')}</ul>${total(legs)}</div>`;
+  }
+  const smallCard = P.smalls.length ? `<div class="combo-card">
+      <div class="combo-card-head"><b>😌 Petit combiné</b><span class="small muted">Les pistes les plus solides de la journée, cote ≈ 3.</span></div>
+      ${P.smalls.map((legs, k) => `${P.smalls.length > 1 ? `<p class="step small"><b>${k ? 'Ou bien ②' : '①'}</b></p>` : ''}<ul class="combo-mini">${legs.map(li).join('')}</ul>${total(legs)}`).join('')}
+    </div>` : '';
+  const bigCard = `<div class="combo-card">
+      <div class="combo-card-head"><b>🚀 Gros coup</b><span class="small muted">Petite mise, gros gain : il passe rarement.</span></div>
+      <div class="gain-pick">${PLAN_GAINS.map(g => `<button class="chip tap${g === planGain ? ' on' : ''}" data-act="plan-gain" data-v="${g}">${g.toLocaleString('fr-FR')} €</button>`).join('')}</div>
+      ${P.big.length ? `<details class="big-legs"><summary>${P.big.length} sélections (voir)</summary><ul class="combo-mini">${P.big.map(li).join('')}</ul></details>${total(P.big)}`
+        : '<p class="small muted">Pas assez de pistes solides pour viser ce gain.</p>'}
+    </div>`;
+  const persoCard = perso.length ? combosHtml(list, 'perso') : '';
   return `<section class="combos plan">
-    <div class="top-head"><h2>💰 Plan du jour</h2></div>
-    ${body || '<p class="small muted">Pas assez de pistes solides pour la suite de la journée.</p>'}
-    <p class="small muted">Cotes « justes » calculées d'après nos probabilités : vérifiez chez le bookmaker que chaque sélection est au moins à la cote « jouable dès ». Les petits combinés n'ont aucun match en commun. Le plan se met à jour au fil de la journée (les matchs commencés en sortent).</p>
+    <div class="top-head"><h2>🎯 Combinés du jour</h2></div>
+    <p class="day-mood"><b>${mood}</b><br><span class="small muted">${up.length} matchs à venir · ${solidN} pistes solides · ${offN} compo${offN > 1 ? 's' : ''} officielle${offN > 1 ? 's' : ''}</span></p>
+    <div class="combo-grid">${slotCard}${smallCard}${bigCard}${persoCard}</div>
+    <p class="small muted">✓ = compos officielles. « dès 1,45 » : cote minimale à trouver chez le bookmaker. ＋ Combiné sur une fiche pour faire le vôtre.</p>
+    <details class="more-combos"><summary>📚 Plus de combinés (top du jour, base solide, favoris, domicile, buteurs…)</summary>
+      ${topHtml(list)}${combosHtml(list, 'others')}
+    </details>
   </section>`;
 }
 
-function combosHtml(list) {
+// only : 'perso' = seulement « Mon combiné perso » ; 'others' = tous les autres (repliés sous « Plus de combinés »)
+function combosHtml(list, only) {
   const slot = bestSlot(list, state.analyses);
   // Buteurs regroupés par match : une ligne par match, avec ses options (buteurs seuls, puis « X ou Y » double chance)
   const scorers = list.filter(m => m.status === 'NS' && m.stats && state.analyses[m.id]).map(m => {
@@ -455,9 +516,10 @@ function combosHtml(list) {
       ${c.single || c.tiers || !active.length ? '' : `<div class="combo-total"><span>${active.length} sélection${active.length > 1 ? 's' : ''} · <b>${p >= 0.01 ? pct(p) : '< 1 %'}</b></span><span>${oddAll ? `cote bookmaker ≈ <b>${oddAll.toFixed(1).replace('.', ',')}</b>` : `cote juste ≈ <b>${(1 / p).toFixed(1).replace('.', ',')}</b>`}</span></div>`}
     </div>`;
   };
+  if (only === 'perso') return card(cards.find(c => c.id === 'perso'));
+  const shown = only === 'others' ? cards.filter(c => c.id !== 'perso' && c.sel.length) : cards;
   return `<section class="combos">
-    <div class="top-head"><h2>🎯 Combinés</h2></div>
-    <div class="combo-grid">${cards.map(card).join('')}</div>
+    <div class="combo-grid">${shown.map(card).join('') || '<p class="small muted">Rien de plus pour la suite de la journée.</p>'}</div>
     <p class="small muted">Les probabilités se multiplient : plus le combiné est long, plus le gain est gros et plus les chances sont faibles. Vos retraits et votre combiné perso restent sur ce téléphone jusqu'à minuit.</p>
   </section>`;
 }
@@ -539,6 +601,7 @@ $('#match-list').addEventListener('click', e => {
   if (b.dataset.act === 'skips') { const k = b.dataset.slot; openSkips.has(k) ? openSkips.delete(k) : openSkips.add(k); renderMatches(); return; }
   if (b.dataset.act === 'copyfav') { copyFavPrompt(b); return; }
   if (b.dataset.act === 'past') { showPast = !showPast; renderMatches(); return; }
+  if (b.dataset.act === 'plan-gain') { planGain = +b.dataset.v; save('plan-gain', planGain); renderMatches(); return; }
   if (b.dataset.act === 'fav') { toggleFav(b.closest('.card').dataset.id); renderMatches(); return; }
   // Combinés : retirer / remettre une sélection, combiné perso
   if (b.dataset.act === 'drop') { const c = b.dataset.combo; dropped[c] = [...new Set([...(dropped[c] || []), b.dataset.mid])]; saveDropped(); renderMatches(); return; }

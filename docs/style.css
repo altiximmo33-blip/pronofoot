@@ -185,6 +185,15 @@ main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
 .combo-total b { color: var(--value); font-size: 16px; }
 .combo-total small { font-size: 12px; font-weight: 400; }
 .combo-total + .combo-total { margin-top: 6px; }
+/* Combinés du jour */
+.day-mood { margin: 4px 0 10px; font-size: 15px; }
+.gain-pick { display: flex; gap: 6px; flex-wrap: wrap; margin: 6px 0 8px; }
+.gain-pick .chip.on { background: var(--go-soft); color: var(--go); font-weight: 700; }
+.big-legs summary { cursor: pointer; font-size: 13px; color: var(--muted, #667); margin-bottom: 6px; }
+.ok-mark { color: var(--go); font-weight: 700; }
+.more-combos { margin-top: 10px; }
+.more-combos > summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
+.plan .combo-card p.go { color: var(--go); }
 /* Plan du jour */
 .plan .plan-block { margin-bottom: 14px; }
 .plan .plan-block .step { margin: 6px 0; }

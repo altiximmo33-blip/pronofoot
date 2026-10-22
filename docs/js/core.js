@@ -262,7 +262,9 @@ export function rotationText(m, pres, side) {
   const r = pres && pres.rotation;
   if (!r || !r.changes) return null;
   const team = m[side].name;
-  const who = r.out.map(o => `${o.n}${o.bench ? ' (banc)' : ''}`).join(', ');
+  // 3 noms au plus (les autres sont dans la fiche, avec la compo dessinée)
+  const names = r.out.map(o => `${o.n}${o.bench ? ' (banc)' : ''}`);
+  const who = names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3}` : '');
   const base = r.of > 1 ? 'titulaire' + (r.changes > 1 ? 's' : '') + ' habituel' + (r.changes > 1 ? 's' : '') : 'titulaire' + (r.changes > 1 ? 's' : '') + ' du dernier match';
   return {
     level: r.changes >= 3 ? 'bad' : 'info',
