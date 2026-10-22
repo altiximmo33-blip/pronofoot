@@ -630,14 +630,15 @@ export function domesticLevel(teamJson) {
   (((t.record && t.record.items) || [])[0]?.stats || []).forEach(s => { st[s.name] = s.value; });
   const rankM = /^(\d+)/.exec(t.standingSummary || '');
   const gp = st.gamesPlayed || 0;
-  // Force de l'ÉQUIPE : le championnat ne compte que pour 40 % ; le reste vient de ce que fait l'équipe
-  // (différence de buts par match, classement). Un cador d'un championnat un peu moins fort reste un cador.
+  // Force de l'ÉQUIPE : niveau du championnat (70 %) + ce que fait l'équipe (différence de buts, classement).
+  // La différence de buts compte d'autant plus que le championnat est fort : dominer la Norvège ne vaut pas
+  // dominer la Premier League (bilan du 21/10 : Viking donné favori à Aston Villa, à tort).
   const gd = gp ? (st.pointsFor - st.pointsAgainst) / gp : 0;
   const coef = L ? L[2] : 50, rank = rankM ? +rankM[1] : (st.rank || null);
   const rankBonus = rank ? (rank <= 2 ? 6 : rank <= 4 ? 4 : rank <= 8 ? 1 : rank >= 15 ? -3 : 0) : 0;
   return {
     slug, league: L ? L[0] : t.defaultLeague.name, div: L ? L[1] : null, rank, coef,
-    S: 48 + 0.4 * coef + 10 * Math.max(-1.5, Math.min(1.5, gd)) + rankBonus, gp,
+    S: 20 + 0.7 * coef + 8 * Math.max(-1.5, Math.min(1.5, gd)) * (coef / 100) + rankBonus, gp,
     home: { p: st.homeGamesPlayed || 0, gf: st.homePointsFor || 0, ga: st.homePointsAgainst || 0, w: st.homeWins || 0 },
     away: { p: st.awayGamesPlayed || 0, gf: st.awayPointsFor || 0, ga: st.awayPointsAgainst || 0, w: st.awayWins || 0 },
     gf: st.pointsFor || 0,
@@ -647,7 +648,7 @@ export function domesticLevel(teamJson) {
 // Équipe d'un championnat non couvert par ESPN (petits pays) : niveau modeste par défaut, sans bilan
 export function unknownLevel() {
   const none = { p: 0, gf: 0, ga: 0, w: 0 };
-  return { slug: null, league: 'championnat non suivi', div: null, rank: null, coef: 55, S: 48 + 0.4 * 55 + 2, gp: 0, home: none, away: none, gf: 0, unknown: true };
+  return { slug: null, league: 'championnat non suivi', div: null, rank: null, coef: 55, S: 20 + 0.7 * 55 + 2, gp: 0, home: none, away: none, gf: 0, unknown: true };
 }
 // Nombre de matchs sur lesquels reposent les stats (en coupe : le plus grand entre compétition et championnat)
 export function statGames(m) {

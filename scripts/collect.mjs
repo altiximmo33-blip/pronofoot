@@ -365,7 +365,8 @@ async function enrichCups(matches, today) {
         const dom = { avgHome: 1.5, avgAway: 1.2, home: level.home.home, away: level.away.away };
         const split = L => ({ home: L.home, away: L.away, n: null, ranks: {}, avg: { avgHome: 1.5, avgAway: 1.2 } });
         const domTs = { home: split(level.home), away: split(level.away) };
-        if (m.stats) { m.domStats = dom; m.domTeamStats = domTs; m.statsSource = 'mixte'; }
+        const played = m.stats && m.teamGames && m.teamGames.home > 0 && m.teamGames.away > 0;
+        if (played) { m.domStats = dom; m.domTeamStats = domTs; m.statsSource = 'mixte'; }
         else { m.stats = dom; m.teamStats = domTs; m.statsSource = 'championnat'; }
       }
       // Correction selon l'écart de niveau (bornée) : un 2 buts par match en National ne vaut pas 2 buts en Ligue 1

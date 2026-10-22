@@ -183,6 +183,16 @@ main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
 .combo-why { margin: 4px 0 0 52px; }
 .combo-total { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; font-size: 14px; padding: 8px 10px; background: var(--value-soft); border-radius: 8px; }
 .combo-total b { color: var(--value); font-size: 16px; }
+.combo-total small { font-size: 12px; font-weight: 400; }
+.combo-total + .combo-total { margin-top: 6px; }
+/* Plan du jour */
+.plan .plan-block { margin-bottom: 14px; }
+.plan .plan-block .step { margin: 6px 0; }
+/* Solidité d'une piste (■■■□□) */
+.solid { font-size: 10px; letter-spacing: 1px; font-weight: 400; white-space: nowrap; vertical-align: middle; }
+.solid.s5, .solid.s4 { color: var(--go); }
+.solid.s3 { color: var(--warn); }
+.solid.s1, .solid.s2 { color: var(--skip); }
 
 .combo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 10px; }
 .combo-card { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: grid; gap: 8px; align-content: start; min-width: 0; }

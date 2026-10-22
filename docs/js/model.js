@@ -68,19 +68,25 @@ const shrink = (v, n) => (v * n + 1 * PRIOR) / (n + PRIOR);
 // Calcul générique (buts réels, xG ou « buts attendus selon le marché ») :
 // bilan du match (domicile / extérieur) mêlé à toute la saison, ramené vers la moyenne s'il y a peu de matchs.
 function lambdaFrom(s, ts, prior = PRIOR) {
-  if (!s || !s.home || !s.away || !(s.home.p > 0) || !(s.away.p > 0) || !s.avgHome || !s.avgAway) return null;
+  if (!s || !s.home || !s.away || !s.avgHome || !s.avgAway) return null;
   const sh = (v, n) => (v * n + prior) / (n + prior);
-  let attH = s.home.gf / s.home.p / s.avgHome, defH = s.home.ga / s.home.p / s.avgAway;
-  let attA = s.away.gf / s.away.p / s.avgAway, defA = s.away.ga / s.away.p / s.avgHome;
-  let nH = s.home.p, nA = s.away.p;
-  if (ts && ts.home && ts.away && ts.home.away && ts.away.home && ts.home.away.p > 0 && ts.away.home.p > 0) {
-    const L = (s.avgHome + s.avgAway) / 2;
-    const all = (t, k) => (t.home[k] + t.away[k]) / (t.home.p + t.away.p) / L;
-    const w = VENUE_WEIGHT;
-    attH = w * attH + (1 - w) * all(ts.home, 'gf'); defH = w * defH + (1 - w) * all(ts.home, 'ga');
-    attA = w * attA + (1 - w) * all(ts.away, 'gf'); defA = w * defA + (1 - w) * all(ts.away, 'ga');
-    nH = ts.home.home.p + ts.home.away.p; nA = ts.away.home.p + ts.away.away.p;
-  }
+  const L = (s.avgHome + s.avgAway) / 2, w = VENUE_WEIGHT;
+  const tot = t => t && t.home && t.away ? t.home.p + t.away.p : 0;
+  const all = (t, k) => (t.home[k] + t.away[k]) / tot(t) / L;
+  // Bilan à domicile (ou à l'extérieur) mêlé au bilan global. Si l'équipe n'a encore joué que de l'autre côté
+  // (ex. 2e journée de coupe d'Europe), le bilan global sert seul.
+  const side = (v, t, k, avgF, avgA) => {
+    const venue = v && v.p > 0 ? { att: v.gf / v.p / avgF, def: v.ga / v.p / avgA } : null;
+    const glob = tot(t) > 0 ? { att: all(t, 'gf'), def: all(t, 'ga') } : null;
+    if (!venue && !glob) return null;
+    if (venue && glob) return { att: w * venue.att + (1 - w) * glob.att, def: w * venue.def + (1 - w) * glob.def, n: tot(t) };
+    return venue ? { ...venue, n: v.p } : { ...glob, n: tot(t) };
+  };
+  const H = side(s.home, ts && ts.home, 'home', s.avgHome, s.avgAway);
+  const A = side(s.away, ts && ts.away, 'away', s.avgAway, s.avgHome);
+  if (!H || !A) return null;
+  let attH = H.att, defH = H.def, attA = A.att, defA = A.def;
+  const nH = H.n, nA = A.n;
   attH = sh(attH, nH); defH = sh(defH, nH); attA = sh(attA, nA); defA = sh(defA, nA);
   return { lh: s.avgHome * attH * defA, la: s.avgAway * attA * defH, idx: { attH, defH, attA, defA } };
 }
@@ -93,14 +99,43 @@ const W_GOALS = 0.35, W_XG = 0.25, W_MARKET = 0.40;
 // prolifiques en début de saison) ; on prend la référence d'une saison européenne normale (~3 buts par match)
 const EURO_AVG = { avgHome: 1.65, avgAway: 1.35 };
 
+// Buts par match des championnats : un 2-1 aux Pays-Bas (3,2 buts/match) ne vaut pas un 2-1 en Liga (2,6)
+export const LEAGUE_GOALS = {
+  'eng.1': 2.85, 'esp.1': 2.6, 'ita.1': 2.65, 'ger.1': 3.1, 'fra.1': 2.8, 'por.1': 2.6, 'ned.1': 3.2, 'bel.1': 2.9, 'tur.1': 2.9,
+  'eng.2': 2.6, 'ger.2': 3.0, 'esp.2': 2.3, 'ita.2': 2.4, 'fra.2': 2.5, 'sco.1': 2.8, 'gre.1': 2.4, 'aut.1': 3.1, 'sui.1': 3.1,
+  'den.1': 2.9, 'cze.1': 2.8, 'nor.1': 3.1, 'swe.1': 2.8, 'pol.1': 2.7, 'ukr.1': 2.6, 'cro.1': 2.7, 'srb.1': 2.8, 'isr.1': 2.6,
+  'ksa.1': 2.9, 'rou.1': 2.5, 'cyp.1': 2.6, 'jpn.1': 2.6, 'eng.3': 2.7, 'eng.4': 2.6,
+};
+// Bilans de championnat ramenés à une échelle commune avant de comparer deux équipes de pays différents :
+// on corrige le nombre de buts du championnat, et le niveau (marquer dans un petit championnat compte moins)
+function normDomestic(m) {
+  const d = m.domStats, L = m.level;
+  if (!d || !L || !L.home || !L.away) return { stats: d, ts: m.domTeamStats };
+  const fix = (side, r) => {
+    if (!r) return r;
+    const lv = L[side], k = 2.7 / (LEAGUE_GOALS[lv.slug] || 2.7), q = Math.sqrt((lv.coef || 55) / 85);
+    return { ...r, gf: r.gf * k * q, ga: r.ga * k / q };
+  };
+  const ts = m.domTeamStats;
+  return {
+    stats: { ...d, home: fix('home', d.home), away: fix('away', d.away) },
+    ts: ts && ts.home && ts.away ? {
+      home: { ...ts.home, home: fix('home', ts.home.home), away: fix('home', ts.home.away) },
+      away: { ...ts.away, home: fix('away', ts.away.home), away: fix('away', ts.away.away) },
+    } : ts,
+  };
+}
+
 function baseExpectedGoals(m) {
   const stats = m.comp && m.comp.type === 'europe' && m.stats ? { ...m.stats, ...EURO_AVG } : m.stats;
-  const G = lambdaFrom(stats, m.teamStats);
+  // Match de coupe : bilan du championnat de chaque équipe, à poids égal avec celui de la compétition
+  const nd = m.domStats ? normDomestic(m) : null;
+  const D = nd ? lambdaFrom(nd.stats, nd.ts) : null;
+  // 1re journée d'une coupe (0 match joué) : le bilan du championnat sert seul
+  const G = lambdaFrom(stats, m.teamStats) || D;
   if (G) {
     const parts = [{ w: W_GOALS, lh: G.lh * HOME_BOOST * GOAL_LEVEL, la: G.la * GOAL_LEVEL }];
-    // Match de coupe : bilan du championnat de chaque équipe, à poids égal avec celui de la compétition
-    const D = m.domStats ? lambdaFrom(m.domStats, m.domTeamStats) : null;
-    if (D) parts.push({ w: W_GOALS, lh: D.lh * HOME_BOOST * GOAL_LEVEL, la: D.la * GOAL_LEVEL });
+    if (D && D !== G) parts.push({ w: W_GOALS, lh: D.lh * HOME_BOOST * GOAL_LEVEL, la: D.la * GOAL_LEVEL });
     const X = m.xg ? lambdaFrom(m.xg, m.xg.teamStats) : null;
     if (X) parts.push({ w: W_XG, lh: X.lh * HOME_BOOST * GOAL_LEVEL, la: X.la * GOAL_LEVEL });
     // Le marché intègre déjà l'avantage du terrain : pas de correction
@@ -384,7 +419,7 @@ export function analyzeMatch(m) {
     .sort((x, y) => y.p1 - x.p1).slice(0, 4);
   const scorers = { home: scorerList(ph, lh, H), away: scorerList(pa, la, A) };
 
-  const ctx = { m, base, lh, la, o, ph, pa, markets, scores, scorers, overs: { o25: over(2.5), o35: over(3.5) }, btts };
+  const ctx = { m, base, lh, la, o, ph, pa, markets, scores, scorers, overs: { o25: over(2.5), o35: over(3.5) }, btts, mk, modelP };
   const verdict = buildVerdict(ctx);
   return {
     lh, la, method: base.method, idx: base.idx, sources: base.sources, marketNow: mk, modelP,
@@ -421,7 +456,8 @@ function buildVerdict(c) {
   // Profil jugé par rapport à la NORME de la compétition (ex. ~3 buts en Ligue des champions, ~2,7 en Ligue 1)
   const ref = c.m.comp && c.m.comp.type === 'europe' ? EURO_AVG.avgHome + EURO_AVG.avgAway
     : c.m.stats && c.m.stats.avgHome ? c.m.stats.avgHome + c.m.stats.avgAway : 2.7;
-  const profile = tot >= Math.max(3.3, ref * 1.15) ? 'festival' : tot >= Math.max(2.7, ref * 1.02) ? 'ouvert'
+  // (« festival » durci : seulement 47 % de réussite au bilan du 21/10, contre 89 % pour « ouvert »)
+  const profile = tot >= Math.max(3.6, ref * 1.25) ? 'festival' : tot >= Math.max(2.7, ref * 1.02) ? 'ouvert'
     : tot <= Math.min(2.3, ref * 0.8) ? 'ferme' : 'equilibre';
   const byKey = k => markets.find(x => x.key === k);
   // Cote d'au moins 1,40 (réelle si on l'a, sinon estimée) : pas de pari « sûr » qui ne rapporte rien
@@ -430,8 +466,16 @@ function buildVerdict(c) {
   const pick = keys => { const l = keys.map(byKey).filter(ok); return l.find(x => x.p >= 0.55) || l.filter(x => x.p >= 0.45).sort((a, b) => b.p - a.p)[0] || null; };
   // --- Le match sous tous ses angles : résultat, buts, les deux marquent, buts d'une équipe, combinés ---
   // Arguments hors statistiques pour départager un match serré : forme réelle, repos / rotation, fatigue, absents
+  // Coupe : l'équipe qui reçoit vient d'un championnat plus fort, sans gros turn-over ni fatigue.
+  // Dans un match équilibré, l'avantage du terrain fait alors pencher vers « victoire ou nul » à domicile
+  // (bilan du 21/10 : Betis – Feyenoord 1-0, on avait joué « Feyenoord ou nul »).
+  const Lv = c.m.level;
+  const homeLeague = !!(Lv && Lv.home && Lv.away && !Lv.home.unknown && (Lv.home.coef || 0) >= (Lv.away.coef || 0) + 5);
+  const homeFresh = !(ph.rotation && ph.rotation.changes >= 4) && !(c.m.fatigue && c.m.fatigue.home && c.m.fatigue.home.tired);
+  const homeLean = homeLeague && homeFresh && fav < 0.55;
   const edgeOf = side => {
     let e = 0;
+    if (side === 'home' && homeLeague && homeFresh) e += 1;
     const p = c.m.perf && c.m.perf[side], f = c.m.fatigue && c.m.fatigue[side], pr = side === 'home' ? ph : pa;
     if (p && ['malchanceuse', 'en pleine bourre'].includes(p.label)) e += 1;
     if (p && ['chanceuse', 'en galère'].includes(p.label)) e -= 1;
@@ -454,6 +498,7 @@ function buildVerdict(c) {
   if (fav >= 0.55) result = pick([S(favSide).big, S(favSide).win]);
   // Favori écrasant (victoire sous 1,40) : on joue ce qui est plus excitant et découle de sa victoire
   if (!result && fav >= 0.55) result = pick2([S(favSide).big3, S(favSide).big, S(favSide).o25, S(favSide).g3, S(favSide).btts, S(favSide).cs], 0.45);
+  if (!result && homeLean) { const t = pick(['1N']); if (t) { resSide = 'home'; result = { ...t, homeEdge: true }; } }
   if (!result && fav >= 0.42 && fav < 0.55) result = pick([S(favSide).dc]);
   if (!result) { resSide = lean; result = pick([S(lean).dc]); }
   const isDC = result && ['1N', 'N2'].includes(result.key);
@@ -506,6 +551,28 @@ function buildVerdict(c) {
   const dbl = (profile === 'festival' || dominant) ? sc.find(p => p.p2 >= 0.15) : null;
   if (dbl) tips.push({ key: 'SC2', label: `${dbl.name} doublé (pari osé)`, p: dbl.p2, edge: null, minOdd: minOdd(dbl.p2), player: dbl.name });
 
+  // --- Solidité de chaque piste (1 à 5) : pas seulement sa probabilité, mais la qualité de ce qui la soutient ---
+  const nG2 = x => x && x.home && x.away ? Math.min(x.home.p, x.away.p) : 0;
+  const games = Math.max(nG2(c.m.stats), nG2(c.m.domStats));
+  const official2 = ph.official && pa.official;
+  const mkGap = c.mk && c.modelP ? Math.abs(c.modelP.home - c.mk.pH) : null;
+  const bigRot = [ph, pa].some(pr => pr.rotation && pr.rotation.changes >= 4);
+  const lvlTight = c.m.level && c.m.level.home && c.m.level.away && Math.abs(c.m.level.home.S - c.m.level.away.S) < 5;
+  tips.forEach(t => {
+    const scorer = String(t.key).startsWith('SC');
+    let s = 1.5 + Math.max(0, Math.min(2.5, (t.p - 0.45) / 0.1));            // probabilité : 45 % → 1,5 ; 60 % → 3 ; 70 % → 4
+    s += games >= 4 ? 0.75 : games >= 3 ? 0.25 : games < 2 ? -0.75 : 0;       // assez de matchs pour y croire
+    if (official2) s += 0.5;                                                  // compos officielles connues
+    if (mkGap != null) s += mkGap < 0.08 ? 0.5 : mkGap > 0.15 ? -0.5 : 0;     // d'accord (ou pas) avec les bookmakers
+    if (bigRot) s -= 0.5;                                                     // gros turn-over : moins prévisible
+    if (t.angle === 'derived') s -= 0.5;                                      // pari combiné : deux conditions à remplir
+    if (t.angle === 'result' && lvlTight && c.m.comp && c.m.comp.type !== 'league') s -= 0.5; // coupe, niveaux proches
+    if (['O35', 'O45'].includes(t.key) || /audacieux/.test(t.label || '')) s -= 0.5; // lignes ambitieuses : souvent ratées
+    if (mkGap == null) s = Math.min(s, 4);                                    // sans cote de bookmaker pour confirmer : 4/5 au plus
+    if (scorer) s = Math.min(s, 3);                                           // un buteur n'est jamais « très sûr »
+    t.solid = Math.max(1, Math.min(5, Math.round(s)));
+  });
+
   // Le plan en une phrase
   const n1 = x => x.toFixed(1).replace('.', ',');
   const plan = {
@@ -538,6 +605,12 @@ function buildVerdict(c) {
   let code = 'skip', label = obvious ? 'Trop évident' : 'Trop imprévisible';
   if (score >= 60) { code = 'play'; label = 'Intéressant'; }
   else if (score >= 30) { code = 'watch'; label = 'À surveiller'; }
+  // La solidité de la meilleure piste départage les verdicts (et pas seulement sa probabilité)
+  const maxSolid = Math.max(0, ...mainTips.map(t => t.solid || 0));
+  if (code === 'play' && maxSolid >= 5) label = 'Base solide';
+  else if (code === 'play' && maxSolid <= 3) { code = 'watch'; label = 'À surveiller'; }
+  else if (code === 'watch' && maxSolid >= 4 && score >= 50) { code = 'play'; label = 'Intéressant'; }
+  else if (code === 'watch' && maxSolid <= 2) { code = 'skip'; label = 'Trop fragile'; }
   // Sans statistiques, aucune piste n'a de sens
   if (c.base.method === 'defaut') {
     tips.length = 0;

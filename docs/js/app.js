@@ -123,7 +123,7 @@ function renderMatches() {
     return;
   }
   const visibleAll = all.filter(m => !state.hidden.has(m.id));
-  const top = (!q && !comp && !verdict) ? favHtml() + topHtml(visibleAll) + combosHtml(visibleAll) : '';
+  const top = (!q && !comp && !verdict) ? favHtml() + planHtml(visibleAll) + topHtml(visibleAll) + combosHtml(visibleAll) : '';
   // Un match en cours reste à sa place (avec le score en direct) ; terminé, il passe dans la section du bas
   const upcoming = list.filter(m => !isFinished(m)), past = list.filter(isFinished);
   const final = m => { const s = state.live[m.id]; return s && s.state === 'post' ? s : null; };
@@ -158,6 +158,9 @@ const oddTxt = t => {
   if (t.odd) return `cote ${fmtOdd(t.odd)} ${t.odd >= need ? '✓' : '✗ trop basse'}`;
   return `jouable dès ${fmtOdd(need)}`;
 };
+// Solidité d'une piste (1 à 5) : probabilité, volume de stats, compos, accord avec les bookmakers, turn-over…
+const SOLID_TXT = ['', 'fragile', 'moyenne', 'correcte', 'solide', 'très solide'];
+const solidTxt = t => t && t.solid ? `<span class="solid s${t.solid}" title="Solidité ${t.solid}/5 : ${SOLID_TXT[t.solid]}">${'■'.repeat(t.solid)}${'□'.repeat(5 - t.solid)}</span>` : '';
 // Joueur en forme : série en cours (buts sur les 3 derniers matchs) ou total des 6 derniers
 const hotTxt = p => p.last3 >= 2 ? `${p.last3} buts sur ses 3 derniers matchs` : `${p.recent} buts sur ses ${p.recentGames} derniers matchs`;
 const isFinished = m => ['FT', 'AET', 'PEN'].includes(m.status);
@@ -296,6 +299,18 @@ function homeLegs(list) {
     return { m, tip: { key: '1', label: `Victoire ${m.home.name}`, p, odd: m.odds && m.odds.h2h && m.odds.h2h.home }, reasons: favReasons(m, 'home') };
   }).filter(Boolean).sort(byTime);
 }
+// 🧱 Base solide : pour chaque match, la piste la plus SOLIDE (4/5 ou plus), pas forcément la plus probable
+function solidLegs(list) {
+  return list.filter(usable).map(m => {
+    const a = state.analyses[m.id];
+    if (a.verdict.code === 'skip') return null;
+    const t = a.tips.filter(x => !String(x.key).startsWith('SC') && (x.solid || 0) >= 4)
+      .sort((x, y) => y.solid - x.solid || y.p - x.p)[0];
+    return t ? { m, tip: t, reasons: [`solidité ${t.solid}/5`, a.verdict.plan ? a.verdict.plan.replace(/\s*:.*$/, '') : ''].filter(Boolean) } : null;
+  }).filter(Boolean).sort(byTime);
+}
+// Les N sélections les plus solides parmi une liste, remises dans l'ordre des horaires
+const strongest = (legs, n) => [...legs].sort((x, y) => y.tip.solid - x.tip.solid || y.tip.p - x.tip.p).slice(0, n).sort(byTime);
 // ✍️ Mon combiné perso : probabilités recalculées à chaque actualisation
 function persoLegs() {
   return perso.map(x => {
@@ -304,6 +319,81 @@ function persoLegs() {
     const mk = a.markets.find(k => k.key === x.key) || a.tips.find(t => t.key === x.key);
     return { m, tip: { key: x.key, label: x.label, p: mk ? mk.p : x.p, odd: mk && mk.odd }, reasons: [], perso: true };
   }).filter(Boolean).sort(byTime);
+}
+
+// 💰 Plan du jour : deux petits combinés « faciles » (cote ≈ 3, sans match en commun)
+// et un gros coup (cote ≈ 400 à 600) pour tenter le gros gain avec une petite mise.
+const PLAN_STAKE = 5, SMALL_ODD = 2.8, BIG_ODD = 400, BIG_MAX = 14, PLAN_GAINS = [300, 400, 500];
+const fairOdd = legs => legs.reduce((a, x) => a / x.tip.p, 1);
+function planDuJour(list) {
+  const cand = list.filter(m => usable(m) && m.kickoff > Date.now()).map(m => {
+    const a = state.analyses[m.id];
+    if (a.verdict.code === 'skip') return null;
+    const main = a.tips.filter(x => !String(x.key).startsWith('SC') && x.p >= 0.45);
+    const safe = [...main].sort((x, y) => (y.solid || 0) - (x.solid || 0) || y.p - x.p)[0];
+    // Version plus audacieuse, pour le gros coup seulement : la plus grosse cote parmi les pistes encore probables
+    // Autres pistes solides du match (3/5 et plus), utilisables pour ajuster la cote d'un combiné
+    const all = main.filter(x => x === safe || (x.p >= 0.5 && (x.solid || 0) >= 3));
+    return safe ? { m, safe, all } : null;
+  }).filter(Boolean);
+  const rank = (x, y) => (y.safe.solid || 0) - (x.safe.solid || 0) || y.safe.p - x.safe.p;
+  // Petits combinés : les pistes les plus solides (4/5 et plus), 2 ou 3 par combiné jusqu'à une cote d'environ 3
+  const sure = cand.filter(c => (c.safe.solid || 0) >= 4).sort(rank);
+  const smalls = [];
+  let i = 0;
+  for (let k = 0; k < 2; k++) {
+    const legs = [];
+    while (i < sure.length && legs.length < 3 && fairOdd(legs) < SMALL_ODD) { legs.push({ m: sure[i].m, tip: sure[i].safe }); i++; }
+    if (legs.length >= 2) smalls.push(legs.sort(byTime));
+  }
+  // Gros coup : les pistes solides (3/5 et plus) jusqu'à la cote visée ; s'il en manque,
+  // les moins solides passent en version audacieuse (cote plus haute)
+  const pool = cand.filter(c => (c.safe.solid || 0) >= 3).sort(rank);
+  // Combiné visant une cote précise : les pistes les plus solides tant qu'on ne dépasse pas la cible,
+  // puis une finition (ajouter un match, ou passer un match sur une autre de ses pistes solides) pour s'en approcher
+  const build = target => {
+    const legs = [], rest = [];
+    for (const c of pool) {
+      if (legs.length < BIG_MAX && fairOdd(legs) / c.safe.p <= target * 1.15) legs.push({ m: c.m, tip: c.safe, c });
+      else rest.push(c);
+    }
+    const gapOf = o => Math.abs(Math.log(o / target));
+    for (let n = 0; n < 10 && gapOf(fairOdd(legs)) > Math.log(1.1); n++) {
+      const cur = fairOdd(legs);
+      let best = null;
+      const consider = (o, act) => { const g = gapOf(o); if (!best || g < best.g) best = { g, act }; };
+      if (legs.length < BIG_MAX) for (const c of rest) if (!legs.some(l => l.c === c)) for (const t of c.all) consider(cur / t.p, () => legs.push({ m: c.m, tip: t, c }));
+      legs.forEach((l, i) => l.c.all.forEach(t => { if (t.key !== l.tip.key) consider(cur * l.tip.p / t.p, () => { legs[i] = { ...l, tip: { ...t, bold: t.p < l.c.safe.p } }; }); }));
+      if (!best || best.g >= gapOf(cur)) break;
+      best.act();
+    }
+    return gapOf(fairOdd(legs)) <= Math.log(1.3) ? legs.sort(byTime) : [];
+  };
+  // Paliers intermédiaires : gain visé de 300, 400, 500 € pour la mise (cote ≈ 60, 80, 100)
+  const tiers = PLAN_GAINS.map(g => ({ gain: g, legs: build(g / PLAN_STAKE) })).filter(t => t.legs.length);
+  const big = build(BIG_ODD);
+  return { smalls, tiers, big: big.length >= 6 ? big : [] };
+}
+function planHtml(list) {
+  const P = planDuJour(list);
+  const pTxt = p => p >= 0.01 ? pct(p) : `${(p * 100).toFixed(2).replace('.', ',')} %`;
+  const li = x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span><small><b>${esc(x.tip.label)}</b>${x.tip.bold ? ' 🎲' : ''} · ${oddTxt(x.tip)}</small></span><b>${pct(x.tip.p)} ${solidTxt(x.tip)}</b></li>`;
+  const block = (title, legs, note) => {
+    const o = fairOdd(legs);
+    return `<div class="plan-block"><p class="step"><b>${title}</b> <span class="small muted">${esc(note)}</span></p>
+      <ul class="combo-mini">${legs.map(li).join('')}</ul>
+      <div class="combo-total"><span>${legs.length} sélections · <b>${pTxt(1 / o)}</b> de réussite</span><span>cote ≈ <b>${o.toFixed(o >= 100 ? 0 : 1).replace('.', ',')}</b> · ${PLAN_STAKE} € → <b>${Math.round(PLAN_STAKE * o).toLocaleString('fr-FR')} €</b></span></div></div>`;
+  };
+  const body = [
+    ...P.smalls.map((legs, k) => block(`${k ? '②' : '①'} Petit combiné facile`, legs, 'les pistes les plus solides du jour')),
+    ...P.tiers.map(t => block(`🎯 Objectif ${t.gain} €`, t.legs, `les pistes les plus solides, jusqu'à une cote d'environ ${Math.round(t.gain / PLAN_STAKE)}`)),
+    P.big.length ? block('🚀 Le gros coup', P.big, `pour le plaisir : il passe rarement, la mise est petite (🎲 = version audacieuse pour monter la cote)`) : '',
+  ].join('');
+  return `<section class="combos plan">
+    <div class="top-head"><h2>💰 Plan du jour</h2></div>
+    ${body || '<p class="small muted">Pas assez de pistes solides pour la suite de la journée.</p>'}
+    <p class="small muted">Cotes « justes » calculées d'après nos probabilités : vérifiez chez le bookmaker que chaque sélection est au moins à la cote « jouable dès ». Les petits combinés n'ont aucun match en commun. Le plan se met à jour au fil de la journée (les matchs commencés en sortent).</p>
+  </section>`;
 }
 
 function combosHtml(list) {
@@ -329,7 +419,8 @@ function combosHtml(list) {
 
   // Les cartes restent toujours visibles, avec un message quand il n'y a rien de solide
   const cards = [
-    { id: 'fav', title: '🛡️ Favoris du jour', rule: 'Avant même les compos : les favoris qui devraient gagner sauf surprise (60 % et plus), sans buteur clé absent ni fatigue de coupe d\'Europe, face à un adversaire pas plus fort. Retirez ceux que vous ne sentez pas avec ✕.', sel: favLegs(list), best: true, empty: 'Aucun favori assez sûr pour la suite de la journée.' },
+    { id: 'solid', title: '🧱 Base solide', rule: 'Une piste par match, choisie pour sa SOLIDITÉ (■ sur 5 : assez de matchs joués, accord avec les bookmakers, compos, pas de gros turn-over), pas seulement pour sa probabilité. En bas : le combiné conseillé (les 4 plus solides) et le gros combiné (les 8 plus solides).', sel: solidLegs(list), best: true, tiers: [4, 8], empty: 'Aucune piste à 4/5 de solidité pour la suite de la journée.' },
+    { id: 'fav', title: '🛡️ Favoris du jour', rule: 'Avant même les compos : les favoris qui devraient gagner sauf surprise (60 % et plus), sans buteur clé absent ni fatigue de coupe d\'Europe, face à un adversaire pas plus fort. Retirez ceux que vous ne sentez pas avec ✕.', sel: favLegs(list), empty: 'Aucun favori assez sûr pour la suite de la journée.' },
     { id: 'dom', title: '🏠 Spécial domicile', rule: 'Les victoires à domicile de 55 à 90 %, avec les mêmes contrôles (absents, fatigue, niveau de l\'adversaire).', sel: homeLegs(list), empty: 'Aucun favori à domicile assez solide pour la suite de la journée.' },
     { id: 'perso', title: '✍️ Mon combiné perso', rule: 'Vos propres choix : ajoutez un match avec le bouton « ＋ Combiné » de sa fiche (ou ＋ à côté d\'une piste).', sel: persoLegs(), empty: 'Vide pour l\'instant : touchez « ＋ Combiné » sur les matchs de votre choix.' },
     slot ? { id: 'slot', title: `⏰ Meilleur créneau : ${hhmmFr(slot.start)}`, rule: `Le plus de matchs analysés à la même heure. À jouer vers ${hhmmFr(slot.betAt)}, quand les compos sont connues (${slot.official}/${slot.count} officielles).`, sel: [...slot.legs].sort(byTime) }
@@ -355,9 +446,13 @@ function combosHtml(list) {
       : `<button class="drop" data-act="drop" data-combo="${c.id}" data-mid="${esc(x.m.id)}" aria-label="Retirer du combiné">✕</button>`;
     return `<div class="combo-card${c.best ? ' best' : ''}">
       ${head}
-      <ul class="combo-mini">${active.map(x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span><small><b>${esc(x.tip.label)}</b> · ${oddTxt(x.tip)}${x.reasons && x.reasons.length ? ' · ' + esc(x.reasons.join(' · ')) : ''}</small></span><b>${pct(x.tip.p)}</b>${dropBtn(x)}</li>`).join('')}</ul>
+      <ul class="combo-mini">${active.map(x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span><small><b>${esc(x.tip.label)}</b> · ${oddTxt(x.tip)}${x.reasons && x.reasons.length ? ' · ' + esc(x.reasons.join(' · ')) : ''}</small></span><b>${pct(x.tip.p)}${c.tiers ? ' ' + solidTxt(x.tip) : ''}</b>${dropBtn(x)}</li>`).join('')}</ul>
       ${removed ? `<p class="small muted">${removed} sélection${removed > 1 ? 's' : ''} retirée${removed > 1 ? 's' : ''} · <button class="link" data-act="undrop" data-combo="${c.id}">↺ tout remettre</button></p>` : ''}
-      ${c.single || !active.length ? '' : `<div class="combo-total"><span>${active.length} sélection${active.length > 1 ? 's' : ''} · <b>${p >= 0.01 ? pct(p) : '< 1 %'}</b></span><span>${oddAll ? `cote bookmaker ≈ <b>${oddAll.toFixed(1).replace('.', ',')}</b>` : `cote juste ≈ <b>${(1 / p).toFixed(1).replace('.', ',')}</b>`}</span></div>`}
+      ${c.tiers ? c.tiers.filter((n, i) => active.length >= (i ? n - 2 : 2) && (i === 0 || active.length > c.tiers[0])).map((n, i) => {
+        const legs = strongest(active, n), pp = legs.reduce((acc, x) => acc * x.tip.p, 1);
+        return `<div class="combo-total"><span>${i ? '🚀 Gros combiné' : '✅ Combiné conseillé'} : ${legs.length} sélections · <b>${pp >= 0.01 ? pct(pp) : '< 1 %'}</b><br><small class="muted">${esc(legs.map(x => `${hhmmFr(x.m.kickoff)} ${x.m.home.name}–${x.m.away.name} : ${x.tip.label}`).join(' · '))}</small></span><span>cote juste ≈ <b>${(1 / pp).toFixed(1).replace('.', ',')}</b></span></div>`;
+      }).join('') : ''}
+      ${c.single || c.tiers || !active.length ? '' : `<div class="combo-total"><span>${active.length} sélection${active.length > 1 ? 's' : ''} · <b>${p >= 0.01 ? pct(p) : '< 1 %'}</b></span><span>${oddAll ? `cote bookmaker ≈ <b>${oddAll.toFixed(1).replace('.', ',')}</b>` : `cote juste ≈ <b>${(1 / p).toFixed(1).replace('.', ',')}</b>`}</span></div>`}
     </div>`;
   };
   return `<section class="combos">
@@ -639,7 +734,7 @@ function compactHtml(m) {
       <span class="badge ${v.code}">${esc(v.label)}</span>
     </button>
     ${liveHtml(m, t)}
-    <div class="c-line">${t ? `<span>${esc(t.label)} <span class="muted">· ${oddTxt(t)}</span>${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}</span><b>${pct(t.p)}</b>` : `<span class="muted">${v.code === 'skip' ? 'Aucune piste retenue' : 'Pas de piste solide'}</span>`}</div>
+    <div class="c-line">${t ? `<span>${esc(t.label)} <span class="muted">· ${oddTxt(t)}</span>${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}</span><b>${pct(t.p)} ${solidTxt(t)}</b>` : `<span class="muted">${v.code === 'skip' ? 'Aucune piste retenue' : 'Pas de piste solide'}</span>`}</div>
     ${!done ? keyPoints(m, a).slice(0, 2).map(l => `<div class="c-plan">${esc(l)}</div>`).join('') : ''}
     ${!done && v.reason ? `<div class="c-reason ${v.code}">${v.code === 'play' ? '✅' : v.code === 'watch' ? '⏳' : '✋'} ${esc(v.reason)}</div>` : ''}
     ${alertBoxHtml(infos)}${goodInfosHtml(infos)}
@@ -845,6 +940,7 @@ function tipWhy(t, m, a) {
     const add = t.key.endsWith('U35') ? 'au plus 3 buts dans un match fermé' : 'au moins 2 buts dans le match';
     return `On garde la protection « ${sd} ou nul » (${dc ? pct(dc.p) : ''}) et on ajoute ${add} : cote plus haute que la double chance seule.`;
   }
+  if (t.homeEdge && m.level) return `Match équilibré, mais ${m.home.name} joue à domicile, vient d'un championnat plus fort (${m.level.home.league} contre ${m.level.away.league}) et sans gros turn-over : l'avantage du terrain fait pencher de son côté, le nul en sécurité (${pct(t.p)}).`;
   if (['1N', 'N2'].includes(t.key)) {
     const sd = t.key === '1N' ? 'home' : 'away', st = m.stats && m.stats[sd];
     return `${m[sd].name} ne perd que dans ${pct(1 - t.p)} des cas${st && st.p ? ` (${st.w != null ? `${st.w} victoire${st.w > 1 ? 's' : ''} sur ${st.p} ` : ''}${sd === 'home' ? 'à domicile' : 'à l\'extérieur'})` : ''} : la sécurité du nul en plus.`;
@@ -973,7 +1069,7 @@ function readingHtml(m, a) {
   };
 
   // L'analyse en étapes : ① résultat, ② buts, ③ ce qui en découle pour monter la cote, ④ buteurs
-  const line = t => `<li>${esc(t.label)} <span class="muted">· ${pct(t.p)} · ${esc(oddTxt(t))}</span><br><small class="muted">${esc(tipWhy(t, m, a))}</small></li>`;
+  const line = t => `<li>${esc(t.label)} <span class="muted">· ${pct(t.p)} · ${esc(oddTxt(t))}</span> ${solidTxt(t)}<br><small class="muted">${esc(tipWhy(t, m, a))}</small></li>`;
   const step = (title, list, empty) => `<p class="step"><b>${title}</b></p>${list.length ? `<ul class="angles">${list.map(line).join('')}</ul>` : `<p class="small muted">${empty}</p>`}`;
   const by = k => a.tips.filter(t => t.angle === k);
   const scorers = a.tips.filter(t => String(t.key).startsWith('SC'));
