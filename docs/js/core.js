@@ -257,19 +257,26 @@ export function espnSquad(rosterJson) {
   });
 }
 
+// Parmi des noms de joueurs absents, les « gros noms » : buteurs importants de l'équipe (15 % de ses buts ou 5 buts et plus)
+const lastNm = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim().split(/\s+/).pop();
+export function keyNames(pres, names) {
+  const players = (pres && pres.players) || [];
+  return names.filter(n => players.some(p => lastNm(p.name) === lastNm(n) && (p.share >= 0.15 || p.goals >= 5)));
+}
+
 // Texte du turn-over d'une équipe (présence calculée par analyzeMatch) : { level: 'bad' | 'info', short, long } ou null
 export function rotationText(m, pres, side) {
   const r = pres && pres.rotation;
   if (!r || !r.changes) return null;
   const team = m[side].name;
-  // 3 noms au plus (les autres sont dans la fiche, avec la compo dessinée)
-  const names = r.out.map(o => `${o.n}${o.bench ? ' (banc)' : ''}`);
-  const who = names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3}` : '');
+  // Le nombre d'absents suffit ; on ne nomme que les gros joueurs (buteurs importants de l'équipe)
+  const big = keyNames(pres, r.out.map(o => o.n));
+  const who = big.length ? ` (dont ${big.join(', ')})` : '';
   const base = r.of > 1 ? 'titulaire' + (r.changes > 1 ? 's' : '') + ' habituel' + (r.changes > 1 ? 's' : '') : 'titulaire' + (r.changes > 1 ? 's' : '') + ' du dernier match';
   return {
     level: r.changes >= 3 ? 'bad' : 'info',
-    short: `${team} sans ${r.changes} ${base} : ${who}`,
-    long: r.changes >= 4 ? `🔄 Gros turn-over chez ${team} : ${r.changes} ${base} absents (${who})` : `👥 ${team} sans ${r.changes} ${base} : ${who}`,
+    short: `${team} sans ${r.changes} ${base}${who}`,
+    long: r.changes >= 4 ? `🔄 Gros turn-over chez ${team} : ${r.changes} ${base} absents${who}` : `👥 ${team} sans ${r.changes} ${base}${who}`,
   };
 }
 

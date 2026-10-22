@@ -196,7 +196,8 @@ function fitToPercent(pc) {
 export function lineOf(pos) {
   const p = String(pos || '').toUpperCase();
   if (!p || p === 'SUB') return '';
-  if (p === 'G' || p === 'GK') return 'G';
+  if (p === 'G' || p === 'GK' || /^GOAL/.test(p)) return 'G';
+  if (/^ATT/.test(p)) return 'F';
   if (/^(D|CB|CD|LB|RB|LWB|RWB|SW|WB)/.test(p)) return 'D';
   if (/^(CF|ST|LW|RW|LF|RF|F)/.test(p)) return 'F';
   if (/^(M|DM|CM|AM|LM|RM)/.test(p)) return 'M';
@@ -247,7 +248,12 @@ function teamPresence(m, side) {
     // → pas encore à 100 % : on ne le cible pas comme buteur
     const recXI = m.recentXI && m.recentXI[side];
     const returning = !p.recentOnly && recXI && recXI.length >= 5 && !recXI.slice(0, 6).some(xi => xi.some(x => samePlayer({ name: x.n }, p)));
-    return { ...p, team: m[side].name, status, reason: inj ? inj.reason : (status === 'absent' ? 'Hors groupe' : ''), share: Math.min(share, 0.7), recent, recentGames: rg ? rg.games : null, last3, hot, returning: !!returning };
+    // Poste : compo officielle, sinon ses dernières titularisations, sinon le classement des buteurs
+    // (G gardien, D défenseur, M milieu, F attaquant) — un défenseur à 2 buts n'est pas un buteur régulier
+    const xiP = official && lu.startXI.find(x => samePlayer(x, p));
+    const recP = recXI && recXI.flat().find(x => samePlayer({ name: x.n }, p));
+    const line = (xiP && lineOf(xiP.pos)) || (recP && recP.l) || lineOf(p.pos) || '';
+    return { ...p, team: m[side].name, status, line, reason: inj ? inj.reason : (status === 'absent' ? 'Hors groupe' : ''), share: Math.min(share, 0.7), recent, recentGames: rg ? rg.games : null, last3, hot, returning: !!returning };
   });
 
   // Impact offensif : part des buts de l'équipe que représentent les absents
@@ -413,7 +419,8 @@ export function analyzeMatch(m) {
     .filter(p => p.status !== 'absent' && (p.goals >= 2 || p.recent >= 2))
     .map(p => {
       // Plafond à 60 % de chances de marquer : le maximum réaliste, même pour un grand attaquant
-      const mu = Math.min(0.92, lambda * Math.min(p.share / pres.absFactor, 0.7) * presenceMult[p.status] * (p.returning ? 0.5 : 1) * (p.hot ? 1.2 : 1));
+      // Défenseur : ses buts viennent surtout des coups de pied arrêtés, moins réguliers (× 0,75)
+      const mu = Math.min(0.92, lambda * Math.min(p.share / pres.absFactor, 0.7) * presenceMult[p.status] * (p.returning ? 0.5 : 1) * (p.hot ? 1.2 : 1) * (p.line === 'D' ? 0.75 : 1));
       return { ...p, team, p1: 1 - Math.exp(-mu), p2: 1 - Math.exp(-mu) * (1 + mu) };
     })
     .sort((x, y) => y.p1 - x.p1).slice(0, 4);
@@ -533,7 +540,7 @@ function buildVerdict(c) {
   // Match fermé : peu de buts attendus, donc aucun pari buteur
   // (et jamais un joueur qui revient d'une longue absence)
   const sc = profile === 'ferme' ? [] : [...c.scorers.home.filter(() => scoring('home')), ...c.scorers.away.filter(() => scoring('away'))]
-    .filter(p => !p.returning).sort((a, b) => b.p1 - a.p1);
+    .filter(p => !p.returning && p.line !== 'D' && p.line !== 'G').sort((a, b) => b.p1 - a.p1); // jamais un défenseur en pari buteur
   // Pari buteur : à partir de 30 % (cote d'environ 3), titulaire confirmé en priorité
   const scorerTip = sc.find(p => p.status === 'titulaire' && p.p1 >= 0.3 && p.p1 < 0.7) || sc.find(p => p.p1 >= 0.3 && p.p1 < 0.7);
   if (scorerTip) tips.push({ key: 'SC', label: `${scorerTip.name} buteur${scorerTip.status === 'titulaire' ? ' (titulaire)' : ''}`, p: scorerTip.p1, edge: null, minOdd: minOdd(scorerTip.p1), team: scorerTip.team, player: scorerTip.name, hot: scorerTip.hot, recent: scorerTip.recent, recentGames: scorerTip.recentGames, last3: scorerTip.last3 });

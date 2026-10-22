@@ -194,6 +194,24 @@ main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
 .more-combos { margin-top: 10px; }
 .more-combos > summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
 .plan .combo-card p.go { color: var(--go); }
+/* Bandeau turn-over */
+.rot-banner { margin: 8px 0; padding: 10px 12px; border-radius: 10px; background: var(--warn-soft); color: var(--text); font-size: 14px; line-height: 1.4; border-left: 4px solid var(--warn); }
+.rot-banner b { font-size: 15px; }
+/* Pronostics à toucher pour les ajouter au combiné */
+.picks { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; align-items: center; }
+.picks-label { width: 100%; font-size: 12px; color: var(--muted); }
+.pick { border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 18px; padding: 6px 10px; font-size: 13px; cursor: pointer; text-align: left; }
+.pick b { margin-left: 2px; }
+.pick.on { background: var(--go-soft); border-color: var(--go); color: var(--go); font-weight: 600; }
+.tip-add { white-space: nowrap; }
+/* Fermer la fiche : en haut, et un bouton qui reste visible pendant la lecture */
+.card-top { display: flex; justify-content: flex-end; margin: -4px 0 2px; }
+.close-top { font-weight: 600; }
+/* Fiche ouverte : « clip » (et non « hidden ») pour que le bouton Refermer puisse rester collé en bas de l'écran */
+.card:not(.compact) { overflow: visible; overflow: clip; }
+.card { scroll-margin-top: 80px; } /* sous la barre du haut, qui reste fixe */
+.close-sticky { position: sticky; bottom: 12px; display: flex; justify-content: center; z-index: 5; pointer-events: none; margin-top: 10px; }
+.close-sticky .btn { pointer-events: auto; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
 /* Plan du jour */
 .plan .plan-block { margin-bottom: 14px; }
 .plan .plan-block .step { margin: 6px 0; }
@@ -408,7 +426,7 @@ tr.value td { background: var(--value-soft); }
 .combo-mini .drop { flex: none; margin-left: 6px; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--muted); font-size: 12px; cursor: pointer; line-height: 1; }
 .combo-mini .drop:hover { color: var(--bad); border-color: var(--bad); }
 .combo-btn.on { background: var(--value-soft); color: var(--value); border-color: transparent; }
-.tip-add { flex: none; margin-left: 8px; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--accent); font-weight: 700; cursor: pointer; }
+.tip-add { flex: none; margin-left: 8px; min-height: 30px; padding: 4px 10px; border-radius: 15px; border: 1px solid var(--accent); background: var(--panel); color: var(--accent); font-weight: 700; font-size: 12.5px; cursor: pointer; }
 .tip-add.on { background: var(--value-soft); color: var(--value); border-color: transparent; }
 /* Buteurs regroupés par match */
 .combo-mini.grouped li { grid-template-columns: auto 1fr; align-items: start; padding: 6px 0; border-bottom: 1px solid var(--line); }
