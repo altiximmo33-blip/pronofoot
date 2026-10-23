@@ -62,6 +62,8 @@ export function teamSplit(rows, row) {
 // - bilan du match (domicile / extérieur) combiné à 50 % avec toute la saison de l'équipe ;
 // - avantage du terrain et niveau de buts légèrement relevés (le modèle les sous-estimait).
 const PRIOR = 8, VENUE_WEIGHT = 0.5, HOME_BOOST = 1.08, GOAL_LEVEL = 1.05;
+// Avantage du terrain supplémentaire en coupe d'Europe quand les deux équipes ont un niveau proche
+const HOME_EURO = 1.1;
 const shrink = (v, n) => (v * n + 1 * PRIOR) / (n + PRIOR);
 
 // --- 1. Buts attendus de base ------------------------------------------------
@@ -113,7 +115,8 @@ function normDomestic(m) {
   if (!d || !L || !L.home || !L.away) return { stats: d, ts: m.domTeamStats };
   const fix = (side, r) => {
     if (!r) return r;
-    const lv = L[side], k = 2.7 / (LEAGUE_GOALS[lv.slug] || 2.7), q = Math.sqrt((lv.coef || 55) / 85);
+    // q : poids du niveau (exposant 0,75 plutôt que 0,5 depuis le bilan du 22/10 : Lillestrøm 0-6, Jagiellonia 0-3, Kauno 1-4)
+    const lv = L[side], k = 2.7 / (LEAGUE_GOALS[lv.slug] || 2.7), q = Math.pow((lv.coef || 55) / 85, 0.75);
     return { ...r, gf: r.gf * k * q, ga: r.ga * k / q };
   };
   const ts = m.domTeamStats;
@@ -315,6 +318,9 @@ function teamPresence(m, side) {
       const attOut = out.filter(o => o.l === 'F' && notScorer(o)).length + out.filter(o => o.l === 'M' && notScorer(o)).length * 0.5;
       defF = 1 + Math.min(0.12, 0.025 * defOut + 0.02 * rookie('GD'));
       attF = 1 - Math.min(0.12, 0.03 * attOut + 0.02 * rookie('MF'));
+      // Gros turn-over (5 titulaires habituels absents ou plus) : l'équipe perd ses automatismes,
+      // au-delà des postes un par un (bilan du 22/10 : Juventus, Marseille, Brighton n'ont pas gagné)
+      if (out.length >= 5) { attF *= 0.95; defF *= 1.03; }
     }
   }
   return { official, players, missing, otherOut, rotation, rested, absFactor: Math.max(factor, 0.6), factor: Math.max(factor, 0.6) * attF, defPenalty: Math.min(1.2, (1 + Math.min(otherOut.length * 0.03, 0.12)) * defF) };
@@ -339,6 +345,11 @@ export function analyzeMatch(m) {
   const adj = m.adj || {};
   let lh = base.lh * ph.factor * formFactor(m.form && m.form.home) * pa.defPenalty * (adj.home || 1);
   let la = base.la * pa.factor * formFactor(m.form && m.form.away) * ph.defPenalty * (adj.away || 1);
+  // Coupe d'Europe entre équipes de niveau proche : l'avantage du terrain pèse plus que d'habitude
+  // (bilan du 22/10 : Braga 2-0 Gand, Monaco 3-0 Fribourg, Hoffenheim 3-0 Lyon, Sturm 1-0 Marseille, tous donnés à l'extérieur)
+  const Lv = m.level;
+  if (m.comp && m.comp.type === 'europe' && Lv && Lv.home && Lv.away && !Lv.home.unknown && !Lv.away.unknown
+    && Math.abs(Lv.home.S - Lv.away.S) < 8) { lh *= HOME_EURO; la /= HOME_EURO; }
   // Cotes du jour connues : on mélange notre estimation avec celle du marché (les gros écarts
   // sont presque toujours des erreurs du modèle ; seuls les écarts modérés restent des « bonnes cotes »)
   const mk = marketTargets(m.odds);
@@ -502,15 +513,26 @@ function buildVerdict(c) {
   //    favori moins net = double chance ; match serré = double chance du côté qui a les arguments
   const pick2 = (keys, min) => keys.map(byKey).filter(ok).find(x => x.p >= min) || null;
   let resSide = favSide, result;
-  if (fav >= 0.55) result = pick([S(favSide).big, S(favSide).win]);
+  // Favori qui fait tourner (5 titulaires habituels absents ou plus) : il gagne moins souvent mais perd rarement
+  // → on le protège avec le nul (bilan du 22/10 : 3 victoires sur 8, 1 seule défaite)
+  const favRot = (favSide === 'home' ? ph : pa).rotation;
+  // (un très gros favori, 68 % et plus malgré la rotation, reste traité normalement : sa double chance ne rapporte rien)
+  const favTurn = !!(favRot && favRot.changes >= 5) && fav < 0.68;
+  if (fav >= 0.55 && favTurn) result = pick([S(favSide).dc]);
+  if (!result && fav >= 0.55 && !favTurn) result = pick([S(favSide).big, S(favSide).win]);
   // Favori écrasant (victoire sous 1,40) : on joue ce qui est plus excitant et découle de sa victoire
-  if (!result && fav >= 0.55) result = pick2([S(favSide).big3, S(favSide).big, S(favSide).o25, S(favSide).g3, S(favSide).btts, S(favSide).cs], 0.45);
+  if (!result && fav >= 0.55 && !favTurn) result = pick2([S(favSide).big3, S(favSide).big, S(favSide).o25, S(favSide).g3, S(favSide).btts, S(favSide).cs], 0.45);
   if (!result && homeLean) { const t = pick(['1N']); if (t) { resSide = 'home'; result = { ...t, homeEdge: true }; } }
   if (!result && fav >= 0.42 && fav < 0.55) result = pick([S(favSide).dc]);
   if (!result) { resSide = lean; result = pick([S(lean).dc]); }
   const isDC = result && ['1N', 'N2'].includes(result.key);
   // ② LES BUTS, selon le profil du match
+  // Favori net face à une équipe qui marque peu : le favori gagne souvent sans encaisser (2-0, 3-0).
+  // On joue alors les buts DU FAVORI plutôt que « plus de 2,5 » ou « les deux marquent »
+  // (bilan du 22/10 : « favori marque 2 buts ou plus » 8/10, contre 5/9 pour « plus de 2,5 »)
+  const clearFav = fav >= 0.58;
   const goals = profile === 'ferme' ? pick(['U15', 'U25'])
+    : clearFav ? (pick([S(favSide).g3, S(favSide).g2]) || pick(profile === 'equilibre' ? ['O25'] : ['O35', 'O25']))
     : profile === 'equilibre' ? pick(['BTTS', 'O25'])
     : pick(['O45', 'O35', 'O25']);
   // ③ CE QUI EN DÉCOULE, pour monter la cote (40 % et plus)
@@ -520,11 +542,12 @@ function buildVerdict(c) {
     if (profile === 'ferme') derived.push(isDC ? pick2([R.u35], 0.4) : pick2([S(resSide).cs], 0.4));      // favori protégé, peu de buts
     else if (isDC) derived.push(pick2([R.o15], 0.45));                                                     // double chance + des buts
     else {
-      derived.push(pick2([S(resSide).o25, S(resSide).btts], 0.42));                                         // le favori gagne dans un match à buts
+      // Favori net : il gagne souvent sans encaisser ; sinon il gagne dans un match à buts
+      derived.push(pick2(clearFav ? [S(resSide).cs, S(resSide).o25] : [S(resSide).o25, S(resSide).btts], 0.42));
       if ((resSide === 'home' ? c.lh : c.la) >= 1.6) derived.push(pick([S(resSide).g3, S(resSide).g2]));    // le favori marque beaucoup
     }
   }
-  if (profile === 'festival' || profile === 'ouvert') derived.push(pick2(['BTTSO25'], 0.45));
+  if ((profile === 'festival' || profile === 'ouvert') && !clearFav) derived.push(pick2(['BTTSO25'], 0.45));
   if (profile === 'festival' && goals) {
     const next = { O25: 'O35', O35: 'O45' }[goals.key] && byKey({ O25: 'O35', O35: 'O45' }[goals.key]);
     if (next && next.p >= 0.45 && ok(next)) derived.push({ ...next, label: `${next.label} (audacieux)` });

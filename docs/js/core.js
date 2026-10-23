@@ -657,7 +657,8 @@ export function domesticLevel(teamJson) {
 // Équipe d'un championnat non couvert par ESPN (petits pays) : niveau modeste par défaut, sans bilan
 export function unknownLevel() {
   const none = { p: 0, gf: 0, ga: 0, w: 0 };
-  return { slug: null, league: 'championnat non suivi', div: null, rank: null, coef: 55, S: 20 + 0.7 * 55 + 2, gp: 0, home: none, away: none, gf: 0, unknown: true };
+  // Championnat non suivi (Andorre, Lituanie, Kazakhstan…) : plus modeste qu'on ne le pensait (bilan du 22/10 : Inter d'Escaldes, Kauno)
+  return { slug: null, league: 'championnat non suivi', div: null, rank: null, coef: 50, S: 20 + 0.7 * 50, gp: 0, home: none, away: none, gf: 0, unknown: true };
 }
 // Nombre de matchs sur lesquels reposent les stats (en coupe : le plus grand entre compétition et championnat)
 export function statGames(m) {
