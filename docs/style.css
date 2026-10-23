@@ -194,6 +194,28 @@ main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
 .more-combos { margin-top: 10px; }
 .more-combos > summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
 .plan .combo-card p.go { color: var(--go); }
+/* Onglet Classements (forme, plus / moins…) */
+.tables { display: grid; gap: 8px; }
+.tb-league { padding: 9px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 15px; font-weight: 600; }
+.tb-seg { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+.tb-seg button { flex: none; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 16px; padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.tb-seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tb-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.tb { width: 100%; border-collapse: collapse; font-size: 13px; }
+.tb th { font-size: 11px; color: var(--muted); font-weight: 600; text-align: center; padding: 8px 4px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.tb td { text-align: center; padding: 7px 4px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.tb tr:last-child td { border-bottom: 0; }
+.tb .tb-team { text-align: left; max-width: 110px; }
+@media (max-width: 420px) { .tb th, .tb td { padding: 7px 2px; } .mk { width: 16px; height: 16px; line-height: 16px; margin: 0; } .tb { font-size: 12.5px; } }
+.tb td.tb-team { display: flex; align-items: center; gap: 6px; overflow: hidden; }
+.tb td.tb-team span { overflow: hidden; text-overflow: ellipsis; }
+.tb td.tb-team img { width: 18px; height: 18px; object-fit: contain; flex: none; }
+.tb-today { color: var(--go); font-style: normal; font-size: 10px; }
+.tb-rank { color: var(--muted); font-weight: 600; }
+.tb-marks { white-space: nowrap; }
+.mk { display: inline-block; width: 18px; height: 18px; line-height: 18px; margin: 0 1px; border-radius: 4px; font-size: 11px; font-weight: 700; font-style: normal; color: #fff; cursor: pointer; }
+.mk.V { background: #1f9d55; } .mk.N { background: #e0a100; } .mk.D { background: #d93636; }
+.tb-detail { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--panel2); font-size: 13px; }
 /* Bandeau turn-over */
 .rot-banner { margin: 8px 0; padding: 10px 12px; border-radius: 10px; background: var(--warn-soft); color: var(--text); font-size: 14px; line-height: 1.4; border-left: 4px solid var(--warn); }
 .rot-banner b { font-size: 15px; }

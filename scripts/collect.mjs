@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeMatch } from '../docs/js/model.js';
 import { compByAf } from '../docs/js/config.js';
-import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnScorers, espnStartersOf, espnRedCards, espnGoalScorers, scorerTipResult, failCause, espnPenalties, penTakers, espnStartersWithLine, espnSquad, rotationText, espnTeamGoals, espnTeamResult, weightedForm, similarity, domesticLevel, unknownLevel, levelFactor, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot, FDCOUK_CODES, FDCOUK_NEW, fdcoukNewRows, fdcoukCompetition, fdcoukForMatch, fdcoukUpcomingOdds } from '../docs/js/core.js';
+import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnScorers, espnStartersOf, espnRedCards, espnGoalScorers, scorerTipResult, failCause, espnPenalties, penTakers, espnStartersWithLine, espnSquad, rotationText, espnTeamGoals, espnTeamResult, weightedForm, similarity, domesticLevel, unknownLevel, levelFactor, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot, FDCOUK_CODES, FDCOUK_NEW, fdcoukNewRows, fdcoukCompetition, fdcoukForMatch, fdcoukUpcomingOdds, TABLE_LEAGUES, espnSeasonResults, LEAGUE_LEVEL } from '../docs/js/core.js';
 
 const AF_KEY = process.env.APIFOOTBALL_KEY;
 const FD_KEY = process.env.FOOTBALLDATA_KEY;
@@ -943,6 +943,8 @@ async function main() {
     const { P } = await penaltiesBackfill(changed ? 200 : 40); // plus large juste après la collecte du matin
     if (attachPens(state.matches, P)) changed = true;
   } catch (e) { console.warn('Penalties :', e.message); }
+  // Classements (fichier à part, enregistré même si rien d'autre ne change)
+  try { await tablesPass(); } catch (e) { console.warn('Classements :', e.message); }
   phase = 'compositions et scores en direct';
   const usedBefore = afUsed;
   try { if (await injuriesPass(state)) changed = true; } catch (e) { console.warn('Absents :', e.message); }
@@ -958,6 +960,31 @@ async function main() {
   await fs.writeFile(TODAY_FILE, json);
   await fs.writeFile(path.join(DATA, 'archive', `${today}.json`), json);
   console.log(`Enregistré (${afUsed} requêtes API-Football utilisées aujourd'hui).`);
+}
+
+// ---------- Onglet « Classements » : résultats de la saison de chaque championnat (toutes les 6 heures) ----------
+// Une seule requête ESPN par championnat et par année civile : la page calcule ensuite classement, forme, plus/moins…
+const TABLES_FILE = path.join(DATA, 'tables.json');
+async function tablesPass() {
+  let old = null;
+  try { old = JSON.parse(await fs.readFile(TABLES_FILE, 'utf8')); } catch { /* premier passage */ }
+  if (old && Date.now() - old.at < 6 * 3600000 && !FORCE) return false;
+  const y = Number(parisDate().slice(0, 4));
+  const out = { at: Date.now(), leagues: {} };
+  for (const code of TABLE_LEAGUES) {
+    const boards = [];
+    for (const yr of [y - 1, y]) {
+      try { boards.push(await espn(`${ESPN_SITE}${code}/scoreboard?dates=${yr}&limit=1000`)); } catch (e) { console.warn('Classement', code, yr, e.message); }
+      await sleep(150);
+    }
+    const r = espnSeasonResults(boards);
+    if (r.matches.length) out.leagues[code] = { name: (LEAGUE_LEVEL[code] || [code])[0], ...r };
+  }
+  // ESPN indisponible : on garde l'ancien fichier plutôt qu'un fichier vide
+  if (!Object.keys(out.leagues).length) return false;
+  await fs.writeFile(TABLES_FILE, JSON.stringify(out));
+  console.log(`Classements : ${Object.keys(out.leagues).length} championnats enregistrés`);
+  return true;
 }
 
 // ---------- État du robot (erreurs lisibles par la page et pour le diagnostic) ----------

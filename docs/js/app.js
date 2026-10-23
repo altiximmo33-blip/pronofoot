@@ -2,6 +2,7 @@ import { COMPETITIONS } from './config.js';
 import * as E from './engine.js';
 const { state, onChange, start, loadAll, toggleHidden, clearAlerts, saveSettings, testKeys } = E;
 import { load, save } from './store.js';
+import { renderTables } from './tables.js';
 import { topPicks, tipResult, bestSlot, rotationText, levelGap, statGames, teamProfile, keyNames } from './core.js';
 
 const $ = s => document.querySelector(s);
@@ -29,6 +30,8 @@ function showTab(t) {
   document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === t));
   document.querySelectorAll('.view').forEach(v => { v.hidden = v.id !== 'view-' + t; });
   if (t === 'settings') renderSettings();
+  // Classements : les équipes du jour sont signalées d'un point
+  if (t === 'tables') renderTables($('#tables'), state.matches.flatMap(m => [m.home.name, m.away.name]));
   if (t === 'alerts') { seenAlerts = state.alerts.length ? state.alerts[0].t : 0; save('seenAlerts', seenAlerts); }
   render();
 }

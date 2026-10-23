@@ -630,6 +630,33 @@ export const LEAGUE_LEVEL = {
   'fra.3': ['National', 3, 46], 'ger.3': ['3. Liga', 3, 52], 'esp.3': ['Primera RFEF', 3, 46], 'ita.3': ['Serie C', 3, 46],
 };
 
+// ---------- Onglet « Classements » : résultats de la saison de chaque championnat ----------
+export const TABLE_LEAGUES = ['fra.1', 'fra.2', 'eng.1', 'eng.2', 'esp.1', 'ita.1', 'ger.1', 'ger.2', 'ned.1', 'por.1', 'bel.1',
+  'tur.1', 'sco.1', 'sui.1', 'aut.1', 'gre.1', 'den.1', 'rou.1', 'cyp.1', 'ksa.1', 'jpn.1'];
+// Programme ESPN d'une ou deux années civiles → saison en cours : { year, teams: { id: [nom, logo] }, matches: [[date, idDom, idExt, butsDom, butsExt]] }
+export function espnSeasonResults(boards) {
+  const done = boards.flatMap(b => (b && b.events) || [])
+    .filter(e => e.competitions && e.competitions[0] && e.competitions[0].status && e.competitions[0].status.type && e.competitions[0].status.type.completed);
+  if (!done.length) return { year: 0, teams: {}, matches: [] };
+  // La compétition du match terminé le plus récent (ex. Japon : la saison en cours, pas le tournoi du printemps)
+  const last = done.reduce((x, y) => (Date.parse(y.date) > Date.parse(x.date) ? y : x));
+  // Championnat que ESPN ne suit plus (Suisse, Roumanie, Chypre…) : dernier match trop ancien, on l'écarte
+  if (Date.now() - Date.parse(last.date) > 45 * 86400000) return { year: 0, teams: {}, matches: [] };
+  const year = (last.season && last.season.year) || 0, slug = last.season && last.season.slug;
+  const teams = {}, matches = [], seen = new Set();
+  const sc = x => +(x.score && typeof x.score === 'object' ? (x.score.value != null ? x.score.value : x.score.displayValue) : x.score) || 0;
+  for (const e of done) {
+    if (!e.season || e.season.year !== year || e.season.slug !== slug || seen.has(e.id)) continue;
+    const c = e.competitions[0];
+    const h = c.competitors.find(x => x.homeAway === 'home'), a = c.competitors.find(x => x.homeAway === 'away');
+    if (!h || !a) continue;
+    seen.add(e.id);
+    for (const t of [h, a]) teams[t.team.id] = teams[t.team.id] || [t.team.shortDisplayName || t.team.displayName, t.team.logo || ''];
+    matches.push([Math.round(Date.parse(e.date) / 1000), h.team.id, a.team.id, sc(h), sc(a)]);
+  }
+  return { year, teams, matches: matches.sort((x, y) => x[0] - y[0]) };
+}
+
 // Niveau d'une équipe : fiche ESPN de l'équipe (dans son championnat) → { slug, league, div, rank, coef, S, home, away }
 export function domesticLevel(teamJson) {
   const t = teamJson && teamJson.team;
