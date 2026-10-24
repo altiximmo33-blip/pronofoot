@@ -866,12 +866,18 @@ function compactHtml(m) {
   const infos0 = done ? [] : keyInfo(m, a).filter(i => !(banner && /^🔄/.test(i.t)));
   const infos = [...infos0.filter(i => i.k === 'bad').slice(0, 3), ...infos0.filter(i => i.k !== 'bad').slice(0, 2)];
   const favBtn = `<button class="fav-btn${favs.has(m.id) ? ' on' : ''}" data-act="fav" aria-pressed="${favs.has(m.id)}">${favs.has(m.id) ? '★ Favori' : '☆ Favori'}</button>`;
-  return `<article class="card compact v-${v.code}${done ? ' is-done' : ''}${state.hidden.has(m.id) ? ' is-hidden' : ''}" data-id="${esc(m.id)}">
+  // Match replié : une seule ligne (heure, équipes, verdict) ; ▸ pour le déplier
+  const mk = 'm-' + m.id, mf = isFold(mk);
+  const headRow = `<div class="c-headrow">
     <button class="compact-main" data-act="open" aria-label="Ouvrir la fiche du match">
       <span class="c-time">${time}</span>
       <span class="c-teams"><span class="c-names">${esc(m.home.name)} – ${esc(m.away.name)}</span><small>${m.comp.flag} ${esc(m.comp.name)}</small></span>
       <span class="badge ${v.code}">${esc(v.label)}</span>
     </button>
+    <button class="m-fold" data-act="fold" data-key="${esc(mk)}" aria-label="${mf ? 'Déplier' : 'Replier'} ce match">${mf ? '▸' : '▾'}</button></div>`;
+  if (mf) return `<article class="card compact is-folded v-${v.code}${done ? ' is-done' : ''}${state.hidden.has(m.id) ? ' is-hidden' : ''}" data-id="${esc(m.id)}">${headRow}${liveHtml(m, t)}</article>`;
+  return `<article class="card compact v-${v.code}${done ? ' is-done' : ''}${state.hidden.has(m.id) ? ' is-hidden' : ''}" data-id="${esc(m.id)}">
+    ${headRow}
     ${liveHtml(m, t)}
     ${banner}
     ${!done && v.code !== 'skip' && a.tips.length ? '' : `<div class="c-line">${t ? `<span>${esc(t.label)} <span class="muted">· ${oddTxt(t)}</span>${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}</span><b>${pct(t.p)} ${solidTxt(t)}</b>` : `<span class="muted">${v.code === 'skip' ? 'Aucune piste retenue' : 'Pas de piste solide'}</span>`}</div>`}

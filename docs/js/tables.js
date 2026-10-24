@@ -59,6 +59,11 @@ const SORT = {
   ou: (a, b) => b.over / (b.p || 1) - a.over / (a.p || 1) || (b.gf + b.ga) / (b.p || 1) - (a.gf + a.ga) / (a.p || 1),
   btts: (a, b) => b.btts / (b.p || 1) - a.btts / (a.p || 1) || b.p - a.p,
 };
+// Rang d'une équipe dans le classement de la stat regardée (ex. plus de 1,5 buts à domicile, 5 derniers matchs)
+function rankIn(L, id, o) {
+  const rows = Object.keys(L.teams).map(t => teamStats(L, t, o)).filter(s => s.p).sort(SORT[o.view]);
+  return { rank: rows.findIndex(s => s.id === id) + 1, size: rows.length };
+}
 // Rang de chaque équipe dans le classement général (toute la saison, tous lieux)
 function ranks(L) {
   const rows = Object.keys(L.teams).map(id => teamStats(L, id, { view: 'table', venue: 'all', last: 0, line: 2.5 })).filter(s => s.p).sort(SORT.table);
@@ -166,8 +171,10 @@ export function duelHtml(m) {
     const id = findTeam(L, m[side].name, m.espn && m.espn[side]);
     if (!id) return null;
     const venue = dopt.venue === 'side' ? side : dopt.venue;
-    const s = teamStats(L, id, { ...dopt, venue });
-    return { side, L, code, id, s, rank: ranks(L).get(id), size: Object.keys(L.teams).length };
+    const o = { ...dopt, venue };
+    // Rang dans LE classement regardé (même stat, même lieu, mêmes derniers matchs), pas le classement général
+    const { rank, size } = rankIn(L, id, o);
+    return { side, L, code, id, s: teamStats(L, id, o), rank, size };
   });
   if (!rows[0] && !rows[1]) return '<p class="small muted">Pas de classement disponible pour ces équipes.</p>';
   const cup = rows[0] && rows[1] && rows[0].code !== rows[1].code;
@@ -177,7 +184,7 @@ export function duelHtml(m) {
     ${seg(dopt, 'view', VIEWS, 'data-duel')}${seg(dopt, 'venue', VEN, 'data-duel')}
     ${dopt.view !== 'table' ? seg(dopt, 'last', LASTS, 'data-duel') : ''}
     ${dopt.view === 'ou' ? seg(dopt, 'line', LINES.map(l => [l, lineTxt(l)]), 'data-duel') : ''}
-    <p class="small muted">${esc(dopt.view === 'table' ? 'Toute la saison' : dopt.last ? `${dopt.last} derniers matchs` : 'Toute la saison')}, ${esc(venueTxt)}${cup ? ' · chaque équipe dans son championnat' : ''}.</p>
+    <p class="small muted">${esc(dopt.view === 'table' ? 'Toute la saison' : dopt.last ? `${dopt.last} derniers matchs` : 'Toute la saison')}, ${esc(venueTxt)}${cup ? ' · chaque équipe dans son championnat' : ''}. # = rang dans ce classement (${esc({ table: 'classement', form: 'forme', ou: `plus de ${lineTxt(dopt.line)} buts`, btts: 'les deux équipes marquent' }[dopt.view])}${dopt.venue === 'side' ? ', à domicile pour l\'une, à l\'extérieur pour l\'autre' : ''}).</p>
     <div class="tb-wrap"><table class="tb">
       <thead><tr><th>#</th><th class="tb-team">Équipe</th>${HEAD(dopt)}<th class="tb-marks">${dopt.view === 'table' || dopt.view === 'form' ? 'Forme' : '5 derniers'}</th></tr></thead>
       <tbody>${rows.filter(Boolean).map(r => `<tr><td class="tb-rank">${r.rank || '–'}<small>/${r.size}</small></td>${teamCell(r.L.teams[r.id], cup ? `<small class="muted"> ${esc(r.L.name)}</small>` : '')}${CELLS(r.s, dopt)}<td class="tb-marks">${marksHtml(r.s, dopt.view)}</td></tr>`).join('')}</tbody>

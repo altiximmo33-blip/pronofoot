@@ -194,6 +194,12 @@ main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
 .more-combos { margin-top: 10px; }
 .more-combos > summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
 .plan .combo-card p.go { color: var(--go); }
+/* Repli d'un match : bouton ▾ / ▸ à droite de la ligne du haut */
+.c-headrow { display: flex; align-items: stretch; }
+.c-headrow .compact-main { flex: 1; min-width: 0; width: auto; padding-right: 4px; }
+.card.is-folded .compact-main { padding-bottom: 10px; }
+.m-fold { flex: none; width: 36px; border: 0; background: transparent; color: var(--muted); font-size: 18px; cursor: pointer; }
+.card.is-folded { padding-bottom: 0; }
 /* Titres repliables (un appui replie / déplie) */
 .fold-head { cursor: pointer; position: relative; padding-right: 30px; user-select: none; }
 .fold-ic { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 18px; line-height: 1; }
