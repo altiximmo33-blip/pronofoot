@@ -194,8 +194,25 @@ main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
 .more-combos { margin-top: 10px; }
 .more-combos > summary { cursor: pointer; font-weight: 600; padding: 8px 0; }
 .plan .combo-card p.go { color: var(--go); }
+/* Titres repliables (un appui replie / déplie) */
+.fold-head { cursor: pointer; position: relative; padding-right: 30px; user-select: none; }
+.fold-ic { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 18px; line-height: 1; }
+.combo-card-head.fold-head .fold-ic { top: 12px; transform: none; }
+/* Recherche d'équipe */
+.team-search { margin-bottom: 10px; }
+.team-search input { width: 100%; box-sizing: border-box; padding: 11px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 16px; }
+.search-res { display: grid; gap: 10px; margin-bottom: 12px; }
+.team-card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; display: grid; gap: 8px; }
+.team-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.team-card-head img { width: 28px; height: 28px; object-fit: contain; }
+.team-card-head b { font-size: 16px; }
+.team-card p { margin: 0; }
+/* Classement des deux équipes dans la fiche d'un match */
+.vs-table { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.detail .sec, .detail .sec-body { min-width: 0; }
+.tb-rank small { color: var(--muted); font-weight: 400; font-size: 10px; }
 /* Onglet Classements (forme, plus / moins…) */
-.tables { display: grid; gap: 8px; }
+.tables { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); }
 .tb-league { padding: 9px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 15px; font-weight: 600; }
 .tb-seg { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
 .tb-seg button { flex: none; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 16px; padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; }

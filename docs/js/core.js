@@ -1,7 +1,7 @@
 // Construction des matchs à partir des données brutes (football-data.org + API-Football).
 // Module pur (pas d'accès réseau ni fichier) : utilisé par le robot et testable dans un navigateur.
-import { teamSplit, norm, lineOf } from './model.js';
-export { lineOf };
+import { teamSplit, norm, lineOf, bigTurn, seasonXI } from './model.js';
+export { lineOf, bigTurn, seasonXI };
 import { compByAf } from './config.js';
 
 // Compétitions couvertes gratuitement par football-data.org (identifiant API-Football → code)
@@ -249,12 +249,31 @@ export function weightedForm(name, list, selfS, selfRank = null) {
 }
 
 // Effectif ESPN d'une équipe : poste et nombre de matchs joués cette saison
+// Effectif d'une compétition avec, pour chaque joueur, ses matchs joués et ses titularisations de la saison
+// (titularisations = matchs joués − entrées en jeu)
 export function espnSquad(rosterJson) {
   return (rosterJson.athletes || []).map(a => {
     const stats = ((a.statistics && a.statistics.splits && a.statistics.splits.categories) || []).flatMap(c => c.stats || []);
-    const apps = stats.find(s => s.name === 'appearances');
-    return { n: a.displayName, l: lineOf(a.position && a.position.abbreviation), apps: apps ? +apps.value || 0 : null };
+    const val = k => { const s = stats.find(x => x.name === k); return s ? +s.value || 0 : null; };
+    const apps = val('appearances'), subs = val('subIns');
+    return { n: a.displayName, l: lineOf(a.position && a.position.abbreviation), apps, starts: apps == null ? null : Math.max(0, apps - (subs || 0)) };
   });
+}
+// Plusieurs compétitions (championnat + coupe d'Europe…) additionnées joueur par joueur → { players, games }
+// games : matchs de l'équipe, estimé par le joueur le plus utilisé de chaque compétition (en général le gardien)
+export function mergeSquads(lists) {
+  const by = new Map();
+  let games = 0;
+  for (const list of lists.filter(Boolean)) {
+    games += Math.max(0, ...list.map(p => p.apps || 0));
+    for (const p of list) {
+      const k = p.n.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+      const c = by.get(k) || { n: p.n, l: p.l, apps: 0, starts: 0 };
+      c.apps += p.apps || 0; c.starts += p.starts || 0; if (!c.l) c.l = p.l;
+      by.set(k, c);
+    }
+  }
+  return { players: [...by.values()].sort((x, y) => y.starts - x.starts), games };
 }
 
 // Parmi des noms de joueurs absents, les « gros noms » : buteurs importants de l'équipe (15 % de ses buts ou 5 buts et plus)
@@ -271,12 +290,16 @@ export function rotationText(m, pres, side) {
   const team = m[side].name;
   // Le nombre d'absents suffit ; on ne nomme que les gros joueurs (buteurs importants de l'équipe)
   const big = keyNames(pres, r.out.map(o => o.n));
-  const who = big.length ? ` (dont ${big.join(', ')})` : '';
-  const base = r.of > 1 ? 'titulaire' + (r.changes > 1 ? 's' : '') + ' habituel' + (r.changes > 1 ? 's' : '') : 'titulaire' + (r.changes > 1 ? 's' : '') + ' du dernier match';
+  // Combien de cadres parmi les absents (titulaires indiscutables, gardien, buteurs importants)
+  const kc = r.keyOut != null && r.of > 1 ? (r.keyOut ? `, dont ${r.keyOut} cadre${r.keyOut > 1 ? 's' : ''}` : ', aucun cadre') : '';
+  const who = big.length ? ` (${big.join(', ')})` : '';
+  const pl = r.changes > 1 ? 's' : '';
+  const base = r.of > 1 ? `titulaire${pl} habituel${pl}` : `titulaire${pl} du dernier match`;
+  const heavy = bigTurn(r);
   return {
-    level: r.changes >= 3 ? 'bad' : 'info',
-    short: `${team} sans ${r.changes} ${base}${who}`,
-    long: r.changes >= 4 ? `🔄 Gros turn-over chez ${team} : ${r.changes} ${base} absents${who}` : `👥 ${team} sans ${r.changes} ${base}${who}`,
+    level: heavy || r.keyOut >= 2 ? 'bad' : 'info',
+    short: `${team} sans ${r.changes} ${base}${kc}${who}`,
+    long: heavy ? `🔄 Gros turn-over chez ${team} : ${r.changes} ${base} absents${kc}${who}` : `👥 ${team} sans ${r.changes} ${base}${kc}${who}`,
   };
 }
 

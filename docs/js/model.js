@@ -207,6 +207,21 @@ export function lineOf(pos) {
   return '';
 }
 
+// Équipe type d'une équipe : les plus titularisés de la saison (effectif ESPN, championnat + coupe additionnés)
+// → { xi: [{ n, l, starts }], games } : 1 gardien + les 10 joueurs de champ les plus titularisés, ou null
+export function seasonXI(m, side) {
+  const sq = m.squad && m.squad[side], games = m.squadGames && m.squadGames[side];
+  if (!sq || !games || games < 4 || !sq.some(p => p.starts)) return null;
+  const by = [...sq].filter(p => p.starts > 0).sort((x, y) => y.starts - x.starts);
+  const gk = by.find(p => p.l === 'G');
+  const field = by.filter(p => p !== gk && p.l !== 'G').slice(0, 10);
+  if (field.length < 10) return null;
+  return { xi: [gk, ...field].filter(Boolean), games };
+}
+
+// Gros turn-over : poids des absents de 4 ou plus (un cadre compte 1, un titulaire habituel 0,5)
+export const bigTurn = r => !!r && (r.weight != null ? r.weight >= 4 : r.changes >= 5);
+
 // --- 2. Absences et remplaçants ------------------------------------------------
 function teamPresence(m, side) {
   const lu = m.lineups && m.lineups[side];
@@ -292,7 +307,14 @@ function teamPresence(m, side) {
     const recent = m.recentXI && m.recentXI[side];
     const prev = m.lastXI && m.lastXI[side];
     let regulars = null, of = 1;
-    if (recent && recent.length >= 3) {
+    // Équipe type = les 11 joueurs les plus titularisés de la SAISON, toutes compétitions réunies
+    // (pas le dernier match, qui peut être un match de rotation en coupe)
+    const xi11 = seasonXI(m, side);
+    if (xi11) {
+      of = xi11.games;
+      regulars = xi11.xi;
+    } else if (recent && recent.length >= 3) {
+      // À défaut d'effectif : les joueurs les plus souvent titulaires sur les 8 derniers matchs
       of = recent.length;
       const cnt = new Map();
       recent.forEach(xi => xi.forEach(p => { const c = cnt.get(p.n) || { n: p.n, l: p.l, starts: 0 }; c.starts++; if (!c.l) c.l = p.l; cnt.set(p.n, c); }));
@@ -301,15 +323,24 @@ function teamPresence(m, side) {
       regulars = prev.map(n => ({ n: typeof n === 'string' ? n : n.n, l: typeof n === 'string' ? '' : n.l, starts: 1 }));
     }
     if (regulars) {
+      // Importance de chaque absent : cadre (titulaire dans 80 % des matchs de la saison ou plus), gardien n° 1, ou buteur important
+      const scorerShare = n => { const p = players.find(x => samePlayer(x, { name: n })); return p ? p.share : 0; };
       const out = regulars.filter(r => !inXI(r.n)).map(r => {
         const sq = fromSquad(r.n);
-        return { n: r.n, l: r.l || (sq && sq.l) || '', starts: r.starts, bench: (lu.subs || []).some(x => samePlayer(x, { name: r.n })) };
+        const l = r.l || (sq && sq.l) || '';
+        // (un gardien de coupe, titulaire une fois sur deux, n'est pas un cadre)
+        const key = (l === 'G' && (of < 4 || r.starts / of >= 0.75)) || (of >= 4 && r.starts / of >= 0.8) || scorerShare(r.n) >= 0.15;
+        return { n: r.n, l, starts: r.starts, key, bench: (lu.subs || []).some(x => samePlayer(x, { name: r.n })) };
       });
       const inn = lu.startXI.filter(x => !regulars.some(r => samePlayer(x, { name: r.n }))).map(x => {
         const sq = fromSquad(x.name);
-        return { n: x.name, l: lineOf(x.pos) || (sq && sq.l) || '', apps: sq ? sq.apps : null };
+        // Poste absent de la compo : celui de ses derniers matchs
+        const rp = !x.pos && recent ? recent.flat().find(p => samePlayer({ name: p.n }, x)) : null;
+        return { n: x.name, l: lineOf(x.pos) || (sq && sq.l) || (rp && rp.l) || '', apps: sq ? sq.apps : null };
       });
-      rotation = { changes: out.length, out, inn, of };
+      // Poids du turn-over : un cadre compte pour 1, un titulaire « habituel » mais pas indiscutable pour 0,5
+      const weight = out.reduce((s, o) => s + (o.key ? 1 : 0.5), 0);
+      rotation = { changes: out.length, out, inn, of, keyOut: out.filter(o => o.key).length, weight, season: !!xi11 };
       // Effet sur les buts : défense remaniée = l'adversaire marque plus ; attaque remaniée = on marque moins
       // (les buteurs absents sont déjà comptés plus haut : on ne les compte pas deux fois)
       const notScorer = o => !pool.some(p => samePlayer(p, { name: o.n }));
@@ -320,7 +351,7 @@ function teamPresence(m, side) {
       attF = 1 - Math.min(0.12, 0.03 * attOut + 0.02 * rookie('MF'));
       // Gros turn-over (5 titulaires habituels absents ou plus) : l'équipe perd ses automatismes,
       // au-delà des postes un par un (bilan du 22/10 : Juventus, Marseille, Brighton n'ont pas gagné)
-      if (out.length >= 5) { attF *= 0.95; defF *= 1.03; }
+      if (weight >= 4) { attF *= 0.95; defF *= 1.03; }
     }
   }
   return { official, players, missing, otherOut, rotation, rested, absFactor: Math.max(factor, 0.6), factor: Math.max(factor, 0.6) * attF, defPenalty: Math.min(1.2, (1 + Math.min(otherOut.length * 0.03, 0.12)) * defF) };
@@ -489,7 +520,7 @@ function buildVerdict(c) {
   // (bilan du 21/10 : Betis – Feyenoord 1-0, on avait joué « Feyenoord ou nul »).
   const Lv = c.m.level;
   const homeLeague = !!(Lv && Lv.home && Lv.away && !Lv.home.unknown && (Lv.home.coef || 0) >= (Lv.away.coef || 0) + 5);
-  const homeFresh = !(ph.rotation && ph.rotation.changes >= 4) && !(c.m.fatigue && c.m.fatigue.home && c.m.fatigue.home.tired);
+  const homeFresh = !bigTurn(ph.rotation) && !(c.m.fatigue && c.m.fatigue.home && c.m.fatigue.home.tired);
   const homeLean = homeLeague && homeFresh && fav < 0.55;
   const edgeOf = side => {
     let e = 0;
@@ -517,7 +548,7 @@ function buildVerdict(c) {
   // → on le protège avec le nul (bilan du 22/10 : 3 victoires sur 8, 1 seule défaite)
   const favRot = (favSide === 'home' ? ph : pa).rotation;
   // (un très gros favori, 68 % et plus malgré la rotation, reste traité normalement : sa double chance ne rapporte rien)
-  const favTurn = !!(favRot && favRot.changes >= 5) && fav < 0.68;
+  const favTurn = bigTurn(favRot) && fav < 0.68;
   if (fav >= 0.55 && favTurn) result = pick([S(favSide).dc]);
   if (!result && fav >= 0.55 && !favTurn) result = pick([S(favSide).big, S(favSide).win]);
   // Favori écrasant (victoire sous 1,40) : on joue ce qui est plus excitant et découle de sa victoire
@@ -586,7 +617,7 @@ function buildVerdict(c) {
   const games = Math.max(nG2(c.m.stats), nG2(c.m.domStats));
   const official2 = ph.official && pa.official;
   const mkGap = c.mk && c.modelP ? Math.abs(c.modelP.home - c.mk.pH) : null;
-  const bigRot = [ph, pa].some(pr => pr.rotation && pr.rotation.changes >= 4);
+  const bigRot = [ph, pa].some(pr => bigTurn(pr.rotation));
   const lvlTight = c.m.level && c.m.level.home && c.m.level.away && Math.abs(c.m.level.home.S - c.m.level.away.S) < 5;
   tips.forEach(t => {
     const scorer = String(t.key).startsWith('SC');

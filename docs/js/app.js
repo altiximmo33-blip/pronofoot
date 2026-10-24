@@ -2,8 +2,8 @@ import { COMPETITIONS } from './config.js';
 import * as E from './engine.js';
 const { state, onChange, start, loadAll, toggleHidden, clearAlerts, saveSettings, testKeys } = E;
 import { load, save } from './store.js';
-import { renderTables } from './tables.js';
-import { topPicks, tipResult, bestSlot, rotationText, levelGap, statGames, teamProfile, keyNames } from './core.js';
+import { renderTables, loadTables, duelHtml, duelClick, bindDuelMarks, searchTeams, teamCardHtml } from './tables.js';
+import { topPicks, tipResult, bestSlot, rotationText, levelGap, statGames, teamProfile, keyNames, bigTurn, seasonXI, similarity, ESPN_CODES } from './core.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -42,7 +42,9 @@ document.addEventListener('click', e => {
 });
 
 // --- Filtres ------------------------------------------------------------------
-['#f-search', '#f-comp', '#f-verdict', '#f-sort', '#f-hidden'].forEach(s => $(s).addEventListener('input', renderMatches));
+['#f-search', '#f-comp', '#f-verdict', '#f-sort', '#f-hidden', '#q-team'].forEach(s => $(s).addEventListener('input', renderMatches));
+// Classements : chargés une fois au démarrage (fiches de match, recherche), puis la page se redessine
+loadTables(() => renderMatches());
 // Actualiser : recharge aussi les fichiers de l'application (remplace le vidage du cache)
 $('#btn-refresh').addEventListener('click', () => window.pfUpdate ? window.pfUpdate(true) : loadAll());
 $('#btn-clear-alerts').addEventListener('click', clearAlerts);
@@ -94,8 +96,11 @@ function fillCompFilter() {
 }
 
 // --- Liste des matchs ---------------------------------------------------------
+const noAcc = s => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
 function renderMatches() {
-  const q = $('#f-search').value.trim().toLowerCase();
+  // Recherche d'équipe (barre du haut) ou recherche des filtres : sans tenir compte des accents
+  const qt = $('#q-team').value.trim();
+  const q = noAcc(qt || $('#f-search').value.trim());
   const comp = $('#f-comp').value, verdict = $('#f-verdict').value, sort = $('#f-sort').value, showHidden = $('#f-hidden').checked;
   // Les matchs terminés restent affichés (avec le score final et le résultat des pistes)
   const all = state.matches;
@@ -108,7 +113,7 @@ function renderMatches() {
     if (!showHidden && state.hidden.has(m.id)) return false;
     if (comp && String(m.comp.af) !== comp) return false;
     if (verdict && a.verdict.code !== verdict) return false;
-    if (q && !(`${m.home.name} ${m.away.name} ${m.comp.name}`.toLowerCase().includes(q))) return false;
+    if (q && !noAcc(`${m.home.name} ${m.away.name} ${qt ? '' : m.comp.name}`).includes(q)) return false;
     return true;
   });
   list.sort(sort === 'score'
@@ -121,6 +126,17 @@ function renderMatches() {
   $('#c-matches').textContent = visible.length || '';
   $('#summary').innerHTML = `<p class="sum-line"><b>${visible.length}</b> matchs · <b class="go">${n('play')}</b> intéressant${n('play') > 1 ? 's' : ''} · <b class="warn">${n('watch')}</b> à surveiller · ${lineupsDone} compo${lineupsDone > 1 ? 's' : ''} officielle${lineupsDone > 1 ? 's' : ''}</p>`;
 
+  // Recherche d'une équipe : sa fiche (classement, forme, domicile / extérieur), puis son match du jour, ouvert
+  if (qt) {
+    if (list.length === 1) opened.add(list[0].id);
+    const found = qt.length >= 3 ? searchTeams(qt) : [];
+    const cards = found.map(t => teamCardHtml(t.code, t.id)).join('');
+    const none = qt.length < 3 ? '<p class="small muted">Tapez au moins 3 lettres.</p>'
+      : !list.length ? `<div class="empty-state">Pas de match aujourd'hui pour « ${esc(qt)} ».</div>` : '';
+    $('#match-list').innerHTML = `<section class="search-res">${cards}${none}</section>${list.length ? `<div class="match-list">${list.map(cardHtml).join('')}</div>` : ''}`;
+    bindDuelMarks($('#match-list'));
+    return;
+  }
   if (!list.length) {
     $('#match-list').innerHTML = `<div class="empty-state">${state.loading ? 'Chargement des matchs…' : 'Aucun match ne correspond.'}</div>`;
     return;
@@ -138,6 +154,7 @@ function renderMatches() {
   const body = !upcoming.length ? '<div class="empty-state">Plus aucun match à venir aujourd\'hui.</div>'
     : sort !== 'slot' ? upcoming.map(cardHtml).join('') : groupSlots(upcoming).map(slotHtml).join('');
   $('#match-list').innerHTML = top + body + pastHtml;
+  bindDuelMarks($('#match-list'));
 }
 
 // Toucher une ligne du top ouvre la fiche du match et y descend
@@ -279,7 +296,7 @@ function solidFav(m, a, side) {
   }
   if (a.presence[side].players.some(x => x.status === 'absent' && x.share >= 0.15)) return false;
   const rot = a.presence[side].rotation;
-  if (rot && rot.changes >= 4) return false;
+  if (bigTurn(rot)) return false;
   const f = m.fatigue && m.fatigue[side];
   return !(f && f.tired);
 }
@@ -434,31 +451,38 @@ function planHtml(list) {
     const status = off === n ? '✓ Toutes les compos sont officielles : à jouer maintenant.'
       : `⏳ Compos officielles : ${off}/${n}. Elles tombent environ 1 h avant (vers ${hhmmFr(slot.start - 3600000)}) ; le combiné se met à jour tout seul.`;
     if (legs.length >= 2) slotCard = `<div class="combo-card best">
-      <div class="combo-card-head"><b>⏰ Spécial ${hhmmFr(slot.start)} · ${n} matchs</b><span class="small muted">Un pari par match, en mélangeant résultat, buts et buteur.</span></div>
-      <p class="small ${off === n ? 'go' : 'muted'}">${status}</p>
-      <ul class="combo-mini">${legs.map(li).join('')}</ul>${total(legs)}</div>`;
+      ${cardHead('c-slot', `⏰ Spécial ${hhmmFr(slot.start)} · ${n} matchs`, 'Un pari par match, en mélangeant résultat, buts et buteur.')}
+      ${isFold('c-slot') ? '' : `<p class="small ${off === n ? 'go' : 'muted'}">${status}</p>
+      <ul class="combo-mini">${legs.map(li).join('')}</ul>${total(legs)}`}</div>`;
   }
   const smallCard = P.smalls.length ? `<div class="combo-card">
-      <div class="combo-card-head"><b>😌 Petit combiné</b><span class="small muted">Les pistes les plus solides de la journée, cote ≈ 3.</span></div>
-      ${P.smalls.map((legs, k) => `${P.smalls.length > 1 ? `<p class="step small"><b>${k ? 'Ou bien ②' : '①'}</b></p>` : ''}<ul class="combo-mini">${legs.map(li).join('')}</ul>${total(legs)}`).join('')}
+      ${cardHead('c-small', '😌 Petit combiné', 'Les pistes les plus solides de la journée, cote ≈ 3.')}
+      ${isFold('c-small') ? '' : P.smalls.map((legs, k) => `${P.smalls.length > 1 ? `<p class="step small"><b>${k ? 'Ou bien ②' : '①'}</b></p>` : ''}<ul class="combo-mini">${legs.map(li).join('')}</ul>${total(legs)}`).join('')}
     </div>` : '';
   const bigCard = `<div class="combo-card">
-      <div class="combo-card-head"><b>🚀 Gros coup</b><span class="small muted">Petite mise, gros gain : il passe rarement.</span></div>
-      <div class="gain-pick">${PLAN_GAINS.map(g => `<button class="chip tap${g === planGain ? ' on' : ''}" data-act="plan-gain" data-v="${g}">${g.toLocaleString('fr-FR')} €</button>`).join('')}</div>
+      ${cardHead('c-big', '🚀 Gros coup', 'Petite mise, gros gain : il passe rarement.')}
+      ${isFold('c-big') ? '' : `<div class="gain-pick">${PLAN_GAINS.map(g => `<button class="chip tap${g === planGain ? ' on' : ''}" data-act="plan-gain" data-v="${g}">${g.toLocaleString('fr-FR')} €</button>`).join('')}</div>
       ${P.big.length ? `<details class="big-legs"><summary>${P.big.length} sélections (voir)</summary><ul class="combo-mini">${P.big.map(li).join('')}</ul></details>${total(P.big)}`
-        : '<p class="small muted">Pas assez de pistes solides pour viser ce gain.</p>'}
+        : '<p class="small muted">Pas assez de pistes solides pour viser ce gain.</p>'}`}
     </div>`;
   const persoCard = perso.length ? combosHtml(list, 'perso') : '';
   return `<section class="combos plan">
-    <div class="top-head"><h2>🎯 Combinés du jour</h2></div>
-    <p class="day-mood"><b>${mood}</b><br><span class="small muted">${up.length} matchs à venir · ${solidN} pistes solides · ${offN} compo${offN > 1 ? 's' : ''} officielle${offN > 1 ? 's' : ''}</span></p>
+    <div class="top-head fold-head" data-act="fold" data-key="plan"><h2>🎯 Combinés du jour</h2>${foldIc('plan')}</div>
+    ${isFold('plan') ? '' : `<p class="day-mood"><b>${mood}</b><br><span class="small muted">${up.length} matchs à venir · ${solidN} pistes solides · ${offN} compo${offN > 1 ? 's' : ''} officielle${offN > 1 ? 's' : ''}</span></p>
     <div class="combo-grid">${slotCard}${smallCard}${bigCard}${persoCard}</div>
-    <p class="small muted">✓ = compos officielles. « dès 1,45 » : cote minimale à trouver chez le bookmaker. Touchez un pronostic (＋) sur une fiche pour faire votre propre combiné.</p>
+    <p class="small muted">✓ = compos officielles. « dès 1,45 » : cote minimale à trouver chez le bookmaker. Touchez un pronostic (＋) sur une fiche pour faire votre propre combiné. Touchez un titre pour le replier.</p>
     <details class="more-combos"><summary>📚 Plus de combinés (top du jour, base solide, favoris, domicile, buteurs…)</summary>
       ${topHtml(list)}${combosHtml(list, 'others')}
-    </details>
+    </details>`}
   </section>`;
 }
+
+// Sections repliables : un appui sur le titre replie ou déplie (mémorisé sur le téléphone)
+const folded = new Set(load('folded', []));
+const isFold = k => folded.has(k);
+function toggleFold(k) { folded.has(k) ? folded.delete(k) : folded.add(k); save('folded', [...folded]); }
+const foldIc = k => `<span class="fold-ic">${isFold(k) ? '▸' : '▾'}</span>`;
+const cardHead = (k, title, sub) => `<div class="combo-card-head fold-head" data-act="fold" data-key="${k}"><b>${title}</b>${foldIc(k)}${isFold(k) || !sub ? '' : `<span class="small muted">${esc(sub)}</span>`}</div>`;
 
 // only : 'perso' = seulement « Mon combiné perso » ; 'others' = tous les autres (repliés sous « Plus de combinés »)
 function combosHtml(list, only) {
@@ -496,7 +520,8 @@ function combosHtml(list, only) {
   const card = c => {
     const off = new Set(c.perso || c.single ? [] : dropped[c.id] || []);
     const active = c.sel.filter(x => !off.has(x.m.id)), removed = c.sel.length - active.length;
-    const head = `<div class="combo-card-head"><b>${c.title}</b><span class="small muted">${esc(c.rule)}</span></div>`;
+    const head = cardHead(`c-${c.id}`, c.title, c.rule);
+    if (isFold(`c-${c.id}`)) return `<div class="combo-card${c.best ? ' best' : ''}">${head}</div>`;
     if (!c.sel.length) return `<div class="combo-card empty">${head}<p class="small muted">${esc(c.empty)}</p></div>`;
     if (c.grouped) {
       return `<div class="combo-card">${head}
@@ -533,12 +558,12 @@ function favHtml() {
   const list = state.matches.filter(m => favs.has(m.id)).sort((a, b) => a.kickoff - b.kickoff);
   if (!list.length) return '';
   return `<section class="favs">
-    <div class="top-head"><h2>⭐ Mes favoris (${list.length})</h2></div>
-    <div class="match-list">${list.map(cardHtml).join('')}</div>
+    <div class="top-head fold-head" data-act="fold" data-key="favs"><h2>⭐ Mes favoris (${list.length})</h2>${foldIc('favs')}</div>
+    ${isFold('favs') ? '' : `<div class="match-list">${list.map(cardHtml).join('')}</div>
     <div class="fav-actions">
       <button class="btn" data-act="copyfav">🔎 Analyse approfondie avec Claude</button>
       <span class="small muted" id="fav-msg">Copie une demande prête à coller dans Claude, avec ces matchs et les chiffres du robot. Recollez ensuite son bloc PRONOFOOT avec « ＋ Ajouter ».</span>
-    </div>
+    </div>`}
   </section>`;
 }
 
@@ -600,8 +625,11 @@ function topHtml(list) {
 }
 
 $('#match-list').addEventListener('click', e => {
+  // Filtres du classement dans une fiche de match (forme, plus / moins, domicile…)
+  if (duelClick(e)) { renderMatches(); return; }
   const b = e.target.closest('[data-act]');
   if (!b) return;
+  if (b.dataset.act === 'fold') { toggleFold(b.dataset.key); renderMatches(); return; }
   if (b.dataset.act === 'skips') { const k = b.dataset.slot; openSkips.has(k) ? openSkips.delete(k) : openSkips.add(k); renderMatches(); return; }
   if (b.dataset.act === 'copyfav') { copyFavPrompt(b); return; }
   if (b.dataset.act === 'past') { showPast = !showPast; renderMatches(); return; }
@@ -786,8 +814,8 @@ function liveHtml(m, t) {
 // 🔄 Bandeau turn-over, bien visible : quelle équipe fait tourner, qui en profite, avec quelles conséquences
 function rotBanner(m, a) {
   const f1 = x => x.toFixed(1).replace('.', ',');
-  // Gros turn-over seulement (5 titulaires habituels absents ou plus) : en dessous, c'est dit dans la fiche
-  const sides = ['home', 'away'].filter(sd => { const r = a.presence[sd].rotation; return r && r.changes >= 5; });
+  // Gros turn-over seulement (les cadres comptent plus que les remplaçants habituels) : en dessous, c'est dit dans la fiche
+  const sides = ['home', 'away'].filter(sd => bigTurn(a.presence[sd].rotation));
   if (!sides.length) return '';
   if (sides.length === 2) {
     const [h, w] = sides.map(sd => a.presence[sd].rotation.changes);
@@ -805,7 +833,8 @@ function rotBanner(m, a) {
   // Buteur de l'équipe favorite, présent et pas défenseur
   const sc = a.scorers[fav].find(p => !p.returning && p.line !== 'D' && p.line !== 'G' && p.p1 >= 0.3);
   if (sc) cons.push(`buteur : ${sc.name} (${pct(sc.p1)})`);
-  return `<div class="rot-banner"><b>🔄 ${esc(m[sd].name)} fait tourner : ${r.changes} titulaires absents${big.length ? ` (dont ${esc(big.join(', '))})` : ''}</b><br>→ ${esc(cons.join(' · '))}</div>`;
+  const kc = r.keyOut != null && r.of > 1 ? (r.keyOut ? `, dont ${r.keyOut} cadre${r.keyOut > 1 ? 's' : ''}` : '') : '';
+  return `<div class="rot-banner"><b>🔄 ${esc(m[sd].name)} fait tourner : ${r.changes} titulaires absents${esc(kc)}${big.length ? ` (${esc(big.join(', '))})` : ''}</b><br>→ ${esc(cons.join(' · '))}</div>`;
 }
 
 // Nos pronostics du match, à toucher pour les ajouter à « Mon combiné perso » (un pari par match)
@@ -1111,7 +1140,7 @@ function keyPoints(m, a) {
   for (const sd of ['home', 'away']) {
     const pr = a.presence[sd], fa = m.fatigue && m.fatigue[sd], name = m[sd].name;
     const rot = rotationText(m, pr, sd);
-    if (rot && pr.rotation.changes >= 3) ctx.push([3, `${name} remaniée (${pr.rotation.changes} titulaires habituels absents)`]);
+    if (rot && (bigTurn(pr.rotation) || pr.rotation.keyOut >= 2)) ctx.push([3, `${name} remaniée (${pr.rotation.changes} titulaires habituels absents)`]);
     const keyOut = pr.missing.filter(x => x.status === 'absent' && x.share >= 0.2);
     if (keyOut.length) ctx.push([3, `${name} sans ${keyOut.map(x => x.name).join(', ')}, son buteur principal`]);
     if (fa && fa.rotated && fa.rest <= 4) ctx.push([2, `${name} avait fait tourner au dernier match : équipe type fraîche`]);
@@ -1241,6 +1270,9 @@ const shortName = n => { const w = String(n || '').trim().split(/\s+/); return w
 
 // Équipe type (compo probable) : les 11 joueurs les plus souvent titulaires sur les derniers matchs
 function usualXI(m, side) {
+  // D'abord les plus titularisés de la saison (toutes compétitions), sinon les 8 derniers matchs
+  const s = seasonXI(m, side);
+  if (s && s.xi.length === 11) return { xi: s.xi.map(p => ({ name: p.n, pos: p.l, starts: p.starts })), of: s.games, season: true };
   const rec = m.recentXI && m.recentXI[side];
   if (!rec || rec.length < 3) return null;
   const cnt = new Map();
@@ -1256,7 +1288,9 @@ function pitchHtml(m, a, side) {
   const official = lu && lu.status === 'officielle' && lu.startXI && lu.startXI.length >= 11;
   const usual = official ? null : usualXI(m, side);
   if (!official && !usual) return `<div class="pitch-wrap"><b>${esc(m[side].name)}</b><p class="small muted">Compo pas encore connue.</p></div>`;
-  const xi = official ? lu.startXI : usual.xi;
+  // Compo sans les postes (ça arrive avec ESPN) : poste deviné d'après les derniers matchs du joueur
+  const recentLine = n => { for (const x of ((m.recentXI && m.recentXI[side]) || []).flat()) if (lastName(x.n) === lastName(n) && x.l) return x.l; return ''; };
+  const xi = official ? lu.startXI.map(p => (p.pos ? p : { ...p, pos: recentLine(p.name) })) : usual.xi;
   const pres = a.presence[side], rot = pres.rotation;
   const hot = n => pres.players.find(p => p.hot && lastName(p.name) === lastName(n));
   const pen = penInfo(m, side), taker = pen && pen.main ? lastName(pen.main.name) : null;
@@ -1264,7 +1298,7 @@ function pitchHtml(m, a, side) {
   const rows = pitchRows(xi, official ? lu.formation : null).reverse();
   const chip = p => `<span class="pl${isNew(p.name) ? ' new' : ''}">${esc(shortName(p.name))}${hot(p.name) ? ' 🔥' : ''}${taker && lastName(p.name) === taker ? ' 🎯' : ''}${isNew(p.name) ? '<i>hors équipe type</i>' : ''}</span>`;
   return `<div class="pitch-wrap">
-    <div class="pitch-head"><b>${esc(m[side].name)}</b><span class="small muted">${official ? `${esc(lu.formation || '')} · officielle` : `équipe type (${usual.of} derniers matchs)`}</span></div>
+    <div class="pitch-head"><b>${esc(m[side].name)}</b><span class="small muted">${official ? `${esc(lu.formation || '')} · officielle` : usual.season ? `équipe type : les plus titularisés (${usual.of} matchs de la saison)` : `équipe type (${usual.of} derniers matchs)`}</span></div>
     <div class="pitch">${rows.map(r => `<div class="prow">${r.map(chip).join('')}</div>`).join('')}</div>
     <p class="pitch-legend">🔥 en forme · 🎯 tireur de penalty${official ? ' · en jaune : hors équipe type' : ''}</p>
     ${official && rot && rot.changes ? (() => { const big = keyNames(pres, rot.out.map(o => o.n)); return `<p class="small"><b>${rot.changes} absent${rot.changes > 1 ? 's' : ''} de l'équipe type</b>${big.length ? ` dont ${esc(big.join(', '))}` : ''}</p>`; })() : ''}
@@ -1322,6 +1356,7 @@ function detailHtml(m, a) {
     + (pens.length ? `<ul class="c-infos flat">${pens.map(p => `<li class="${p.k}">${esc(p.t)}</li>`).join('')}</ul>` : '<p class="small muted">Tireurs de penalty pas encore connus pour ces équipes.</p>');
   return `
   <div class="detail">
+    ${sec('📊 Classement et forme des deux équipes', duelHtml(m), true)}
     ${sec(`👥 Compositions${official ? ' <span class="chip ok">officielles</span>' : ' <span class="chip">équipe type</span>'}`, composBody, true)}
     ${scorers.length || pens.length ? sec('⚽ Buteurs et tireurs de penalty', `${pensHtml}<ul class="play-list">${scorers.map(p => `<li><div><b>${esc(p.name)}${takers.has(lastName(p.name)) ? ' 🎯' : ''}</b><span class="muted small">${esc(p.team)}${POS_FR[p.line] ? ` · ${POS_FR[p.line]}` : ''} · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} match${p.played > 1 ? 's' : ''}` : ''} · ${{ titulaire: 'titulaire ✓', remplacant: 'sur le banc', incertain: 'incertain', probable: 'compo pas encore connue' }[p.status] || ''}${p.hot ? ` · 🔥 ${hotTxt(p)}` : ''}${p.p2 >= 0.1 ? ` · doublé ${pct(p.p2)}` : ''}</span></div><b class="p">${pct(p.p1)}</b></li>`).join('')}</ul>`) : ''}
     ${sec('📈 Forme, niveau des adversaires, fatigue', formBody + notes)}

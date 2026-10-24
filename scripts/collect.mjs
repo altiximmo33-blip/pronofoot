@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeMatch } from '../docs/js/model.js';
 import { compByAf } from '../docs/js/config.js';
-import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnScorers, espnStartersOf, espnRedCards, espnGoalScorers, scorerTipResult, failCause, espnPenalties, penTakers, espnStartersWithLine, espnSquad, rotationText, espnTeamGoals, espnTeamResult, weightedForm, similarity, domesticLevel, unknownLevel, levelFactor, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot, FDCOUK_CODES, FDCOUK_NEW, fdcoukNewRows, fdcoukCompetition, fdcoukForMatch, fdcoukUpcomingOdds, TABLE_LEAGUES, espnSeasonResults, LEAGUE_LEVEL } from '../docs/js/core.js';
+import { FD_CODES, ESPN_CODES, buildCompetition, buildMatch, applyInjuries, applyLineups, groupSlots, hhmm, tipResult, failReason, biasFactor, topPicks, espnCompetition, espnScorers, espnStartersOf, espnRedCards, espnGoalScorers, scorerTipResult, failCause, espnPenalties, penTakers, espnStartersWithLine, espnSquad, rotationText, espnTeamGoals, espnTeamResult, weightedForm, similarity, domesticLevel, unknownLevel, levelFactor, espnFindEvent, applyEspnLineups, espnLiveScore, comboLegs, espnEventTeams, espnTeamMatchStats, perfSummary, bestSlot, FDCOUK_CODES, FDCOUK_NEW, fdcoukNewRows, fdcoukCompetition, fdcoukForMatch, fdcoukUpcomingOdds, mergeSquads, TABLE_LEAGUES, espnSeasonResults, LEAGUE_LEVEL } from '../docs/js/core.js';
 
 const AF_KEY = process.env.APIFOOTBALL_KEY;
 const FD_KEY = process.env.FOOTBALLDATA_KEY;
@@ -439,6 +439,8 @@ async function enrichEspn(matches, bilan, today) {
     } catch (e) { console.warn(e.message); continue; }
     if (!ids) continue;
     m.espn = { id: ids.id, home: ids.homeId, away: ids.awayId };
+    // Équipe type dès le matin (titularisations de la saison), avant même les compos officielles
+    try { await loadSquads(m); } catch (e) { console.warn('Effectif :', e.message); }
     m.perf = {}; m.fatigue = {}; m.notes = m.notes || [];
     for (const side of ['home', 'away']) {
       const espnId = side === 'home' ? ids.homeId : ids.awayId, name = m[side].name;
@@ -689,7 +691,7 @@ function dedupeEspn(matches) {
     for (const m of list) {
       if (espnIdOf(m) === id) continue;
       console.warn(`Doublon ESPN ${id} : infos ESPN retirées pour ${m.home.name} – ${m.away.name}`);
-      for (const k of ['espn', 'perf', 'fatigue', 'lastXI', 'recentXI', 'pens', 'level', 'squad']) delete m[k];
+      for (const k of ['espn', 'perf', 'fatigue', 'lastXI', 'recentXI', 'pens', 'level', 'squad', 'squadGames']) delete m[k];
       m.notes = [];
     }
   }
@@ -779,12 +781,21 @@ async function injuriesPass(state) {
 }
 
 // Effectif ESPN des deux équipes (poste, matchs joués) dès que les compos sont connues : sert au turn-over
+// Effectif et équipe type : titularisations de TOUTE la saison, championnat et coupe du jour additionnés
+// (les joueurs les plus titularisés = l'équipe type ; pas le dernier match, qui peut être un match de rotation)
 async function loadSquads(m) {
   const code = ESPN_CODES[m.comp && m.comp.af];
-  if (!code || !m.espn || m.squad) return;
-  m.squad = {};
+  if (!code || !m.espn || (m.squad && m.squadGames)) return;
+  m.squad = {}; m.squadGames = {};
   for (const side of ['home', 'away']) {
-    try { m.squad[side] = espnSquad(await espn(`${ESPN_SITE}${code}/teams/${m.espn[side]}/roster`)); } catch (e) { console.warn('Effectif :', e.message); }
+    const league = m.level && m.level[side] && m.level[side].slug;
+    const codes = [...new Set([code, league].filter(Boolean))];
+    const lists = [];
+    for (const c of codes) {
+      try { lists.push(espnSquad(await espn(`${ESPN_SITE}${c}/teams/${m.espn[side]}/roster`))); } catch (e) { console.warn('Effectif :', e.message); }
+    }
+    const sq = mergeSquads(lists);
+    if (sq.players.length) { m.squad[side] = sq.players; m.squadGames[side] = sq.games; }
   }
 }
 
