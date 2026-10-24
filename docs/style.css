@@ -220,7 +220,7 @@ main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
 /* Onglet Classements (forme, plus / moins…) */
 .tables { display: grid; gap: 8px; grid-template-columns: minmax(0, 1fr); }
 .tb-league { padding: 9px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 15px; font-weight: 600; }
-.tb-seg { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+.tb-seg { display: flex; gap: 6px; flex-wrap: wrap; }
 .tb-seg button { flex: none; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 16px; padding: 6px 12px; font-size: 13px; font-weight: 600; cursor: pointer; }
 .tb-seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .tb-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }

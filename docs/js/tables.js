@@ -6,9 +6,10 @@ import { load, save } from './store.js';
 import { similarity, ESPN_CODES } from './core.js';
 
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const VIEWS = [['table', 'Classement'], ['form', 'Forme'], ['ou', 'Plus / moins'], ['btts', 'Les 2 marquent']];
+const VIEWS = [['table', 'Classement'], ['form', 'Forme'], ['att', 'Attaque'], ['def', 'Défense'], ['ou', 'Plus / moins'], ['btts', 'Les 2 marquent']];
 const VENUES = [['all', 'Global'], ['home', 'Domicile'], ['away', 'Extérieur']];
-const LASTS = [[5, '5'], [10, '10'], [15, '15'], [0, 'Tout']];
+// Sur combien de matchs on calcule (les plus récents d'abord)
+const LASTS = [[5, '5 derniers matchs'], [10, '10 derniers'], [15, '15 derniers'], [0, 'Toute la saison']];
 const LINES = [0.5, 1.5, 2.5, 3.5, 4.5];
 const n1 = x => x.toFixed(1).replace('.', ',');
 const pc = (a, b) => (b ? `${Math.round(100 * a / b)} %` : '–');
@@ -36,10 +37,12 @@ function teamStats(L, id, o) {
     .filter(m => o.venue === 'all' || (o.venue === 'home' ? m[1] === id : m[2] === id))
     .sort((x, y) => y[0] - x[0]);  // le plus récent d'abord
   if (o.view !== 'table' && o.last) list = list.slice(0, o.last);
-  const s = { id, p: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0, over: 0, btts: 0, marks: [] };
+  const s = { id, p: 0, w: 0, d: 0, l: 0, gf: 0, ga: 0, over: 0, btts: 0, cs: 0, fts: 0, marks: [] };
   for (const m of list) {
     const home = m[1] === id, f = home ? m[3] : m[4], a = home ? m[4] : m[3];
     s.p++; s.gf += f; s.ga += a;
+    if (a === 0) s.cs++;   // match sans encaisser
+    if (f === 0) s.fts++;  // match sans marquer
     const r = f > a ? 'V' : f === a ? 'N' : 'D';
     s[{ V: 'w', N: 'd', D: 'l' }[r]]++;
     const over = m[3] + m[4] > o.line, btts = m[3] > 0 && m[4] > 0;
@@ -47,7 +50,7 @@ function teamStats(L, id, o) {
     if (btts) s.btts++;
     const opp = L.teams[home ? m[2] : m[1]];
     const tip = `${home ? 'Dom.' : 'Ext.'} ${new Date(m[0] * 1000).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' })} · ${opp ? opp[0] : ''} ${m[3]}-${m[4]}`;
-    s.marks.push({ r, over, btts, tip });
+    s.marks.push({ r, over, btts, f, a, tip });
   }
   s.pts = s.w * 3 + s.d;
   s.diff = s.gf - s.ga;
@@ -56,6 +59,9 @@ function teamStats(L, id, o) {
 const SORT = {
   table: (a, b) => b.pts - a.pts || b.diff - a.diff || b.gf - a.gf,
   form: (a, b) => b.pts - a.pts || b.diff - a.diff || b.gf - a.gf,
+  // Attaque : le plus de buts marqués par match en tête ; défense : le moins de buts encaissés par match en tête
+  att: (a, b) => b.gf / (b.p || 1) - a.gf / (a.p || 1) || b.gf - a.gf,
+  def: (a, b) => a.ga / (a.p || 1) - b.ga / (b.p || 1) || b.cs - a.cs,
   ou: (a, b) => b.over / (b.p || 1) - a.over / (a.p || 1) || (b.gf + b.ga) / (b.p || 1) - (a.gf + a.ga) / (a.p || 1),
   btts: (a, b) => b.btts / (b.p || 1) - a.btts / (a.p || 1) || b.p - a.p,
 };
@@ -73,6 +79,9 @@ function ranks(L) {
 // Pastilles des 5 derniers matchs (le plus récent à gauche, comme Flashscore)
 function marksHtml(s, view) {
   return s.marks.slice(0, 5).map(k => {
+    // Attaque : buts marqués dans chaque match ; défense : buts encaissés (vert = bon, rouge = mauvais)
+    if (view === 'att') return `<i class="mk ${k.f >= 2 ? 'V' : k.f === 1 ? 'N' : 'D'}" title="${esc(k.tip)}">${k.f}</i>`;
+    if (view === 'def') return `<i class="mk ${k.a === 0 ? 'V' : k.a === 1 ? 'N' : 'D'}" title="${esc(k.tip)}">${k.a}</i>`;
     if (view === 'ou') return `<i class="mk ${k.over ? 'V' : 'D'}" title="${esc(k.tip)}">${k.over ? '+' : '−'}</i>`;
     if (view === 'btts') return `<i class="mk ${k.btts ? 'V' : 'D'}" title="${esc(k.tip)}">${k.btts ? 'O' : 'N'}</i>`;
     return `<i class="mk ${k.r}" title="${esc(k.tip)}">${k.r}</i>`;
@@ -81,12 +90,16 @@ function marksHtml(s, view) {
 const HEAD = o => ({
   table: '<th>MJ</th><th>V</th><th>N</th><th>D</th><th>B</th><th>Diff</th><th>Pts</th>',
   form: '<th>MJ</th><th>V</th><th>N</th><th>D</th><th>B</th><th>Pts</th>',
+  att: '<th>MJ</th><th>Buts</th><th>/match</th><th>0 but</th>',
+  def: '<th>MJ</th><th>Encaissés</th><th>/match</th><th>0 encaissé</th>',
   ou: `<th>MJ</th><th>+${lineTxt(o.line)}</th><th>−</th><th>%</th><th>B/M</th>`,
   btts: '<th>MJ</th><th>Oui</th><th>Non</th><th>%</th>',
 }[o.view]);
 const CELLS = (s, o) => ({
   table: `<td>${s.p}</td><td>${s.w}</td><td>${s.d}</td><td>${s.l}</td><td>${s.gf}:${s.ga}</td><td>${s.diff > 0 ? '+' : ''}${s.diff}</td><td><b>${s.pts}</b></td>`,
   form: `<td>${s.p}</td><td>${s.w}</td><td>${s.d}</td><td>${s.l}</td><td>${s.gf}:${s.ga}</td><td><b>${s.pts}</b></td>`,
+  att: `<td>${s.p}</td><td>${s.gf}</td><td><b>${s.p ? n1(s.gf / s.p) : '–'}</b></td><td>${s.fts}</td>`,
+  def: `<td>${s.p}</td><td>${s.ga}</td><td><b>${s.p ? n1(s.ga / s.p) : '–'}</b></td><td>${s.cs}</td>`,
   ou: `<td>${s.p}</td><td><b>${s.over}</b></td><td>${s.p - s.over}</td><td>${pc(s.over, s.p)}</td><td>${s.p ? n1((s.gf + s.ga) / s.p) : '–'}</td>`,
   btts: `<td>${s.p}</td><td><b>${s.btts}</b></td><td>${s.p - s.btts}</td><td>${pc(s.btts, s.p)}</td>`,
 }[o.view]);
@@ -124,6 +137,8 @@ export async function renderTables(el, todayTeams = []) {
   const note = {
     table: `Toute la saison${venueTxt}.`,
     form: `${opt.last ? `${opt.last} derniers matchs` : 'Toute la saison'}${venueTxt}, classés aux points.`,
+    att: `${opt.last ? `${opt.last} derniers matchs` : 'Toute la saison'}${venueTxt} : buts marqués par match (la meilleure attaque en tête). Moyenne du championnat : ${n1(goalsAll / (all || 1) / 2)} but par équipe et par match.`,
+    def: `${opt.last ? `${opt.last} derniers matchs` : 'Toute la saison'}${venueTxt} : buts encaissés par match (la meilleure défense en tête). « 0 encaissé » = matchs sans prendre de but.`,
     ou: `Matchs à plus de ${lineTxt(opt.line)} buts. Moyenne du championnat : ${pc(overAll, all)} des matchs, ${n1(goalsAll / (all || 1))} buts par match.`,
     btts: `Les deux équipes ont marqué. Moyenne du championnat : ${pc(bttsAll, all)} des matchs.`,
   }[opt.view];
@@ -134,7 +149,7 @@ export async function renderTables(el, todayTeams = []) {
     ${opt.view === 'ou' ? seg(opt, 'line', LINES.map(l => [l, lineTxt(l)]), 'data-tb') : ''}
     <p class="small muted">${esc(note)}</p>
     <div class="tb-wrap"><table class="tb">
-      <thead><tr><th>#</th><th class="tb-team">Équipe</th>${HEAD(opt)}<th class="tb-marks">${opt.view === 'table' || opt.view === 'form' ? 'Forme' : '5 derniers'}</th></tr></thead>
+      <thead><tr><th>#</th><th class="tb-team">Équipe</th>${HEAD(opt)}<th class="tb-marks">${opt.view === 'table' || opt.view === 'form' ? 'Forme' : opt.view === 'att' ? 'Buts marqués' : opt.view === 'def' ? 'Buts encaissés' : '5 derniers'}</th></tr></thead>
       <tbody>${rows.map((s, i) => `<tr><td class="tb-rank">${i + 1}</td>${teamCell(L.teams[s.id], plays(L.teams[s.id][0]) ? '<i class="tb-today" title="Joue aujourd\'hui">●</i>' : '')}${CELLS(s, opt)}<td class="tb-marks">${marksHtml(s, opt.view)}</td></tr>`).join('')}</tbody>
     </table></div>
     <p class="tb-detail" hidden></p>
@@ -184,9 +199,9 @@ export function duelHtml(m) {
     ${seg(dopt, 'view', VIEWS, 'data-duel')}${seg(dopt, 'venue', VEN, 'data-duel')}
     ${dopt.view !== 'table' ? seg(dopt, 'last', LASTS, 'data-duel') : ''}
     ${dopt.view === 'ou' ? seg(dopt, 'line', LINES.map(l => [l, lineTxt(l)]), 'data-duel') : ''}
-    <p class="small muted">${esc(dopt.view === 'table' ? 'Toute la saison' : dopt.last ? `${dopt.last} derniers matchs` : 'Toute la saison')}, ${esc(venueTxt)}${cup ? ' · chaque équipe dans son championnat' : ''}. # = rang dans ce classement (${esc({ table: 'classement', form: 'forme', ou: `plus de ${lineTxt(dopt.line)} buts`, btts: 'les deux équipes marquent' }[dopt.view])}${dopt.venue === 'side' ? ', à domicile pour l\'une, à l\'extérieur pour l\'autre' : ''}).</p>
+    <p class="small muted">${esc(dopt.view === 'table' ? 'Toute la saison' : dopt.last ? `${dopt.last} derniers matchs` : 'Toute la saison')}, ${esc(venueTxt)}${cup ? ' · chaque équipe dans son championnat' : ''}. # = rang dans ce classement (${esc({ table: 'classement', form: 'forme', att: 'attaque', def: 'défense', ou: `plus de ${lineTxt(dopt.line)} buts`, btts: 'les deux équipes marquent' }[dopt.view])}${dopt.venue === 'side' ? ', à domicile pour l\'une, à l\'extérieur pour l\'autre' : ''}).</p>
     <div class="tb-wrap"><table class="tb">
-      <thead><tr><th>#</th><th class="tb-team">Équipe</th>${HEAD(dopt)}<th class="tb-marks">${dopt.view === 'table' || dopt.view === 'form' ? 'Forme' : '5 derniers'}</th></tr></thead>
+      <thead><tr><th>#</th><th class="tb-team">Équipe</th>${HEAD(dopt)}<th class="tb-marks">${dopt.view === 'table' || dopt.view === 'form' ? 'Forme' : dopt.view === 'att' ? 'Buts marqués' : dopt.view === 'def' ? 'Buts encaissés' : '5 derniers'}</th></tr></thead>
       <tbody>${rows.filter(Boolean).map(r => `<tr><td class="tb-rank">${r.rank || '–'}<small>/${r.size}</small></td>${teamCell(r.L.teams[r.id], cup ? `<small class="muted"> ${esc(r.L.name)}</small>` : '')}${CELLS(r.s, dopt)}<td class="tb-marks">${marksHtml(r.s, dopt.view)}</td></tr>`).join('')}</tbody>
     </table></div>
     <p class="tb-detail" hidden></p>

@@ -95,7 +95,7 @@
   <script>
     // Mise à jour automatique de l'application : quand une nouvelle version est publiée
     // (version.json), le téléphone recharge tous les fichiers sans vider le cache à la main.
-    var APP_VERSION = '2026-10-24b';
+    var APP_VERSION = '2026-10-24c';
     var APP_FILES = ['index.html', 'aide.html', 'style.css', 'js/app.js', 'js/engine.js', 'js/model.js',
       'js/core.js', 'js/config.js', 'js/claude.js', 'js/store.js', 'js/today.js', 'js/tables.js'];
     window.pfUpdate = function (force) {
@@ -114,7 +114,24 @@
     };
     window.pfUpdate(false);
     setInterval(function () { window.pfUpdate(false); }, 10 * 60000);
+    // Chaque version charge ses fichiers sous une adresse nouvelle (?v=…) : aucun ancien fichier gardé en mémoire
+    // (téléphone ou serveur GitHub) ne peut se mélanger à la nouvelle version
+    (function () {
+      var imports = {};
+      APP_FILES.filter(function (f) { return f.indexOf('js/') === 0; }).forEach(function (f) {
+        imports[new URL(f, location.href).href] = new URL(f + '?v=' + APP_VERSION, location.href).href;
+      });
+      var map = document.createElement('script');
+      map.type = 'importmap';
+      map.textContent = JSON.stringify({ imports: imports });
+      document.head.appendChild(map);
+      var app = document.createElement('script');
+      app.type = 'module';
+      app.src = 'js/app.js?v=' + APP_VERSION;
+      document.body.appendChild(app);
+      var css = document.querySelector('link[href="style.css"]');
+      if (css) css.href = 'style.css?v=' + APP_VERSION;
+    })();
   </script>
-  <script type="module" src="js/app.js"></script>
 </body>
 </html>
