@@ -57,8 +57,11 @@ export function buildCompetition(standingsJson, matchesJson, scorersJson) {
 // ---------- Rapprochement des noms d'équipes entre les deux sources ----------
 const STOP = new Set(['fc', 'afc', 'ac', 'as', 'sc', 'ssc', 'cf', 'club', 'de', 'du', 'la', 'le', 'les', 'olympique', 'stade', 'rc', 'ogc', 'sv', 'vfb', 'vfl', 'tsg', 'fsv', 'sport', 'sporting', 'calcio', 'us', 'ud', 'cd', 'rcd', 'sad', 'bv', 'borussia', '1', '04', '05', 'hotspur', 'and', 'albion', 'city', 'town', 'united', 'utd',
   // Articles et sigles trop courants pour distinguer deux clubs (« Al Diriyah » / « Al Ettifaq », « FK … »)
-  'al', 'el', 'fk', 'sk', 'if', 'bk', 'nk', 'cs', 'ks', 'gks', 'kv', 'kaa', 'krc', 'sv', 'ca', 'cr', 'ec', 'se', 'sd', 'ue', 'cfr', 'fcsb']);
-const tokens = s => norm(s).split(' ').filter(w => w && !STOP.has(w));
+  'al', 'el', 'fk', 'sk', 'if', 'bk', 'nk', 'cs', 'ks', 'gks', 'kv', 'kaa', 'krc', 'sv', 'ca', 'cr', 'ec', 'se', 'sd', 'ue', 'cfr', 'fcsb',
+  // Danemark / Scandinavie (« Odense Boldklub », « Sønderjyske Fodbold », « Viborg FF »)
+  'ff', 'boldklub', 'fodbold', 'boldspilklub']);
+// (lettres isolées ignorées : « F.C. København » → « kobenhavn »)
+const tokens = s => norm(s).split(' ').filter(w => w.length > 1 && !STOP.has(w));
 const KEEP_DISTINCT = ['city', 'united'];
 
 export function similarity(a, b) {
@@ -350,6 +353,13 @@ const FDC_ALIASES = [
   [/^inter$/, 'inter milan'], [/^milan$/, 'ac milan'], [/^roma$/, 'as roma'], [/^verona$/, 'hellas verona'],
   // Japon
   [/^urawa reds$/, 'urawa red diamonds'], [/^verdy$/, 'tokyo verdy 1969'], [/^chiba$/, 'jef united ichihara chiba'],
+  // Danemark
+  [/^fc copenhagen$/, 'kobenhavn'], [/^aarhus$/, 'agf aarhus'],
+  // Argentine (abréviations de football-data.co.uk → noms ESPN)
+  [/^estudiantes l\W*p\W*$/, 'estudiantes de la plata'], [/^gimnasia l\W*p\W*$/, 'gimnasia la plata'], [/^gimnasia mendoza$/, 'gimnasia mendoza'],
+  [/^atl\W*tucuman$/, 'atletico tucuman'], [/^dep\W*riestra$/, 'deportivo riestra'], [/^ind\W*rivadavia$/, 'independiente rivadavia'],
+  [/^argentinos jrs$/, 'argentinos juniors'], [/^union de santa fe$/, 'union santa fe'], [/^sarmiento junin$/, 'sarmiento junin'],
+  [/^central cordoba$/, 'central cordoba santiago del estero'], [/^talleres cordoba$/, 'talleres cordoba'], [/^estudiantes rio cuarto$/, 'estudiantes de rio cuarto'],
 ];
 const fdcName = n => { const s = norm(n); const a = FDC_ALIASES.find(([re]) => re.test(s)); return a ? a[1] : s; };
 
@@ -383,7 +393,7 @@ const fdcDate = s => { const [d, m, y] = String(s || '').split('/'); return Date
 // Saison d'un championnat : par équipe, buts, xG et « buts attendus selon le marché », à domicile et à l'extérieur
 // Championnats du « nouveau » format de football-data.co.uk (un fichier par pays, toutes saisons) :
 // résultats et cotes de clôture, sans xG — de quoi calculer la note du marché de chaque équipe
-export const FDCOUK_NEW = { 98: 'JPN' };
+export const FDCOUK_NEW = { 98: 'JPN', 128: 'ARG', 262: 'MEX', 119: 'DNK' };
 export function fdcoukNewRows(csvText) {
   const rows = parseCsv(csvText).filter(r => r.Home && r.HG !== '' && r.HG != null);
   const season = rows.reduce((s, r) => (r.Season > s ? r.Season : s), '');   // saison en cours = la plus récente
@@ -463,7 +473,7 @@ export const ESPN_CODES = {
   140: 'esp.1', 143: 'esp.copa_del_rey', 135: 'ita.1', 137: 'ita.coppa_italia', 78: 'ger.1', 79: 'ger.2', 81: 'ger.dfb_pokal',
   88: 'ned.1', 94: 'por.1', 144: 'bel.1', 207: 'sui.1', 203: 'tur.1', 179: 'sco.1', 218: 'aut.1', 197: 'gre.1', 119: 'den.1',
   2: 'uefa.champions', 3: 'uefa.europa', 848: 'uefa.europa.conf',
-  283: 'rou.1', 318: 'cyp.1', 307: 'ksa.1', 98: 'jpn.1',
+  283: 'rou.1', 318: 'cyp.1', 307: 'ksa.1', 98: 'jpn.1', 128: 'arg.1', 262: 'mex.1',
 };
 
 const espnTeam = t => ({ id: 'espn-' + t.id, name: t.displayName || t.name, shortName: t.shortDisplayName || t.name, tla: t.abbreviation });
@@ -625,6 +635,7 @@ export function tipResult(key, h, a) {
     BTTS: h > 0 && a > 0, NBTTS: h === 0 || a === 0, H2G: h >= 2, A2G: a >= 2,
     'H2+': h - a >= 2, 'A2+': a - h >= 2, '1O25': h > a && t > 2.5, '2O25': a > h && t > 2.5,
     '1BTTS': h > a && a > 0, '2BTTS': a > h && h > 0, '1CS': h > a && a === 0, '2CS': a > h && h === 0,
+    H1G: h >= 1, A1G: a >= 1, U45: t < 4.5,
   };
   return key in rules ? rules[key] : null;
 }
@@ -649,13 +660,13 @@ export const LEAGUE_LEVEL = {
   'sco.1': ['Premiership', 1, 68], 'gre.1': ['Super League', 1, 68], 'aut.1': ['Bundesliga autrichienne', 1, 68], 'sui.1': ['Super League suisse', 1, 66],
   'den.1': ['Superliga', 1, 64], 'cze.1': ['Tchéquie', 1, 62], 'nor.1': ['Norvège', 1, 60], 'swe.1': ['Suède', 1, 58], 'pol.1': ['Pologne', 1, 60],
   'ukr.1': ['Ukraine', 1, 62], 'cro.1': ['Croatie', 1, 58], 'srb.1': ['Serbie', 1, 58], 'isr.1': ['Israël', 1, 54], 'ksa.1': ['Arabie saoudite', 1, 60],
-  'rou.1': ['Roumanie', 1, 56], 'cyp.1': ['Chypre', 1, 54], 'jpn.1': ['J1 League', 1, 60], 'eng.3': ['League One', 3, 58], 'eng.4': ['League Two', 4, 50],
+  'rou.1': ['Roumanie', 1, 56], 'cyp.1': ['Chypre', 1, 54], 'jpn.1': ['J1 League', 1, 60], 'arg.1': ['Liga Profesional', 1, 64], 'mex.1': ['Liga MX', 1, 62], 'eng.3': ['League One', 3, 58], 'eng.4': ['League Two', 4, 50],
   'fra.3': ['National', 3, 46], 'ger.3': ['3. Liga', 3, 52], 'esp.3': ['Primera RFEF', 3, 46], 'ita.3': ['Serie C', 3, 46],
 };
 
 // ---------- Onglet « Classements » : résultats de la saison de chaque championnat ----------
 export const TABLE_LEAGUES = ['fra.1', 'fra.2', 'eng.1', 'eng.2', 'esp.1', 'ita.1', 'ger.1', 'ger.2', 'ned.1', 'por.1', 'bel.1',
-  'tur.1', 'sco.1', 'sui.1', 'aut.1', 'gre.1', 'den.1', 'rou.1', 'cyp.1', 'ksa.1', 'jpn.1'];
+  'tur.1', 'sco.1', 'sui.1', 'aut.1', 'gre.1', 'den.1', 'rou.1', 'cyp.1', 'ksa.1', 'jpn.1', 'arg.1', 'mex.1'];
 // Programme ESPN d'une ou deux années civiles → saison en cours : { year, teams: { id: [nom, logo] }, matches: [[date, idDom, idExt, butsDom, butsExt]] }
 export function espnSeasonResults(boards) {
   const done = boards.flatMap(b => (b && b.events) || [])

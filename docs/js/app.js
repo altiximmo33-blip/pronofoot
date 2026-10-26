@@ -2,7 +2,7 @@ import { COMPETITIONS } from './config.js';
 import * as E from './engine.js';
 const { state, onChange, start, loadAll, toggleHidden, clearAlerts, saveSettings, testKeys } = E;
 import { load, save } from './store.js';
-import { renderTables, loadTables, duelHtml, duelClick, bindDuelMarks, searchTeams, teamCardHtml } from './tables.js';
+import { renderTables, loadTables, duelHtml, duelClick, bindDuelMarks, searchTeams, teamCardHtml, faceHtml, faceAlerts } from './tables.js';
 import { topPicks, tipResult, bestSlot, rotationText, levelGap, statGames, teamProfile, keyNames, bigTurn, seasonXI, similarity, ESPN_CODES } from './core.js';
 
 const $ = s => document.querySelector(s);
@@ -396,6 +396,23 @@ function planDuJour(list) {
   return { smalls, big: big.length >= 5 ? big : [] };
 }
 
+// 🛡️ Paris sûrs : très probables, petite cote, à jouer chacun en SIMPLE pour entretenir la cagnotte.
+// Types et seuils retenus d'après le test sur 9 jours (17-25/10) :
+// « l'équipe à domicile marque » 94 % de réussite au-dessus de 85 %, « +1,5 buts » 87 % au-dessus de 80 %,
+// « domicile ou nul » 87 % au-dessus de 80 % ; « l'équipe à l'extérieur marque » seulement fiable au-dessus de 85 %,
+// « moins de 4,5 buts » entre 80 et 90 % (au-dessus, il rate plus qu'annoncé). Un pari par match, les 6 plus sûrs.
+const SAFE_MIN = { H1G: 0.8, O15: 0.8, '1N': 0.8, A1G: 0.85, U45: 0.8 };
+const SAFE_MAX = { U45: 0.9 };
+function safeBets(list) {
+  const out = [];
+  for (const m of list.filter(m => usable(m) && m.kickoff > Date.now())) {
+    const a = state.analyses[m.id];
+    const best = a.markets.filter(x => SAFE_MIN[x.key] && x.p >= SAFE_MIN[x.key] && x.p <= (SAFE_MAX[x.key] || 1)).sort((x, y) => y.p - x.p)[0];
+    if (best) out.push({ m, tip: best });
+  }
+  return out.sort((x, y) => y.tip.p - x.tip.p).slice(0, 6).sort(byTime);
+}
+
 // Compos officielles connues pour les deux équipes
 const isOff = m => !!(m.lineups && m.lineups.home && m.lineups.home.status === 'officielle' && m.lineups.away && m.lineups.away.status === 'officielle');
 // Gain visé par le gros coup (mémorisé sur le téléphone)
@@ -413,7 +430,8 @@ function mixLegs(matches, n) {
       if (t.key === 'SC2' || (!sc && t.angle === 'derived')) continue;
       // Buteur : titulaire seul s'il est bien placé (35 % et plus), sinon « X ou Y » si la double chance est belle (50 % et plus)
       if (sc && !(t.key === 'SCD' ? t.p >= 0.5 : t.p >= 0.35 && (/titulaire/.test(t.label) || !isOff(m)))) continue;
-      if (!sc && (t.solid || 0) < 3) continue;
+      // 4/5 minimum : sur 9 jours, les pistes à 3/5 ne réussissent qu'une fois sur deux (51 %), contre 64 % à partir de 4/5
+      if (!sc && (t.solid || 0) < 4) continue;
       const kind = sc ? 'buteur' : t.angle === 'result' ? 'résultat' : 'buts';
       opts.push({ m, tip: t, kind, score: (t.solid || 2) + t.p + (isOff(m) ? 0.5 : 0) });
     }
@@ -459,6 +477,13 @@ function planHtml(list) {
       ${cardHead('c-small', '😌 Petit combiné', 'Les pistes les plus solides de la journée, cote ≈ 3.')}
       ${isFold('c-small') ? '' : P.smalls.map((legs, k) => `${P.smalls.length > 1 ? `<p class="step small"><b>${k ? 'Ou bien ②' : '①'}</b></p>` : ''}<ul class="combo-mini">${legs.map(li).join('')}</ul>${total(legs)}`).join('')}
     </div>` : '';
+  // 🛡️ Paris sûrs, à jouer chacun en simple
+  const safe = safeBets(list);
+  const safeCard = safe.length ? `<div class="combo-card safe">
+      ${cardHead('c-safe', '🛡️ Paris sûrs (en simple)', 'Pour faire grossir la cagnotte : chacun se joue seul, pas en combiné.')}
+      ${isFold('c-safe') ? '' : `<ul class="combo-mini">${safe.map(x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span><small><b>${esc(x.tip.label)}</b> · cote juste ≈ ${fmtOdd(1 / x.tip.p)}</small><small class="${isOff(x.m) ? 'go' : 'muted'}">${isOff(x.m) ? '✓ compos officielles : à jouer' : `⏳ compos vers ${hhmmFr(x.m.kickoff - 3600000)} : attendez-les`}</small></span><b>${pct(x.tip.p)}</b></li>`).join('')}</ul>
+      <p class="small muted">Classés par horaire. Jouez chacun une fois les compos connues (environ 1 h avant). Testé sur 9 jours (17-25/10) : en prenant chaque jour les 4 plus sûrs, 33 sur 36 sont passés (92 %). À vous de juger la cote : au-dessus de 90 %, le bookmaker paie souvent moins de 1,10.</p>`}
+    </div>` : '';
   const bigCard = `<div class="combo-card">
       ${cardHead('c-big', '🚀 Gros coup', 'Petite mise, gros gain : il passe rarement.')}
       ${isFold('c-big') ? '' : `<div class="gain-pick">${PLAN_GAINS.map(g => `<button class="chip tap${g === planGain ? ' on' : ''}" data-act="plan-gain" data-v="${g}">${g.toLocaleString('fr-FR')} €</button>`).join('')}</div>
@@ -469,7 +494,7 @@ function planHtml(list) {
   return `<section class="combos plan">
     <div class="top-head fold-head" data-act="fold" data-key="plan"><h2>🎯 Combinés du jour</h2>${foldIc('plan')}</div>
     ${isFold('plan') ? '' : `<p class="day-mood"><b>${mood}</b><br><span class="small muted">${up.length} matchs à venir · ${solidN} pistes solides · ${offN} compo${offN > 1 ? 's' : ''} officielle${offN > 1 ? 's' : ''}</span></p>
-    <div class="combo-grid">${slotCard}${smallCard}${bigCard}${persoCard}</div>
+    <div class="combo-grid">${safeCard}${slotCard}${smallCard}${bigCard}${persoCard}</div>
     <p class="small muted">✓ = compos officielles. « dès 1,45 » : cote minimale à trouver chez le bookmaker. Touchez un pronostic (＋) sur une fiche pour faire votre propre combiné. Touchez un titre pour le replier.</p>
     <details class="more-combos"><summary>📚 Plus de combinés (top du jour, base solide, favoris, domicile, buteurs…)</summary>
       ${topHtml(list)}${combosHtml(list, 'others')}
@@ -882,6 +907,7 @@ function compactHtml(m) {
     ${banner}
     ${!done && v.code !== 'skip' && a.tips.length ? '' : `<div class="c-line">${t ? `<span>${esc(t.label)} <span class="muted">· ${oddTxt(t)}</span>${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}</span><b>${pct(t.p)} ${solidTxt(t)}</b>` : `<span class="muted">${v.code === 'skip' ? 'Aucune piste retenue' : 'Pas de piste solide'}</span>`}</div>`}
     ${!done ? keyPoints(m, a).slice(0, 2).map(l => `<div class="c-plan">${esc(l)}</div>`).join('') : ''}
+    ${!done ? faceAlerts(m).slice(0, 2).map(l => `<div class="c-face">${esc(l)}</div>`).join('') : ''}
     ${done || v.code === 'skip' ? '' : picksHtml(m, a, 4)}
     ${!done && v.reason ? `<div class="c-reason ${v.code}">${v.code === 'play' ? '✅' : v.code === 'watch' ? '⏳' : '✋'} ${esc(v.reason)}</div>` : ''}
     ${alertBoxHtml(infos)}${goodInfosHtml(infos)}
@@ -1362,7 +1388,8 @@ function detailHtml(m, a) {
     + (pens.length ? `<ul class="c-infos flat">${pens.map(p => `<li class="${p.k}">${esc(p.t)}</li>`).join('')}</ul>` : '<p class="small muted">Tireurs de penalty pas encore connus pour ces équipes.</p>');
   return `
   <div class="detail">
-    ${sec('📊 Classement et forme des deux équipes', duelHtml(m), true)}
+    ${sec('🆚 Face-à-face : domicile contre extérieur', faceHtml(m) || '<p class="small muted">Pas assez de matchs pour comparer ces deux équipes.</p>', true)}
+    ${sec('📊 Classement et forme des deux équipes', duelHtml(m), false)}
     ${sec(`👥 Compositions${official ? ' <span class="chip ok">officielles</span>' : ' <span class="chip">équipe type</span>'}`, composBody, true)}
     ${scorers.length || pens.length ? sec('⚽ Buteurs et tireurs de penalty', `${pensHtml}<ul class="play-list">${scorers.map(p => `<li><div><b>${esc(p.name)}${takers.has(lastName(p.name)) ? ' 🎯' : ''}</b><span class="muted small">${esc(p.team)}${POS_FR[p.line] ? ` · ${POS_FR[p.line]}` : ''} · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} match${p.played > 1 ? 's' : ''}` : ''} · ${{ titulaire: 'titulaire ✓', remplacant: 'sur le banc', incertain: 'incertain', probable: 'compo pas encore connue' }[p.status] || ''}${p.hot ? ` · 🔥 ${hotTxt(p)}` : ''}${p.p2 >= 0.1 ? ` · doublé ${pct(p.p2)}` : ''}</span></div><b class="p">${pct(p.p1)}</b></li>`).join('')}</ul>`) : ''}
     ${sec('📈 Forme, niveau des adversaires, fatigue', formBody + notes)}

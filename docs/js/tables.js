@@ -218,6 +218,92 @@ export function duelClick(e) {
 }
 export function bindDuelMarks(root) { root.querySelectorAll('.vs-table').forEach(bindMarks); }
 
+// ---------- 2 bis. Face-à-face : l'équipe qui reçoit À DOMICILE contre l'équipe qui se déplace À L'EXTÉRIEUR ----------
+// Toute la saison, chaque équipe dans son contexte. Voyants : 🟢 favorable, 🔴 défavorable, ⚪ rien de net.
+// Attaque / défense jugées par rapport à la moyenne du championnat (1,0 = dans la moyenne).
+function venueAvg(L) {
+  const n = L.matches.length || 1;
+  return { home: L.matches.reduce((s, m) => s + m[3], 0) / n, away: L.matches.reduce((s, m) => s + m[4], 0) / n };
+}
+function faceData(m) {
+  if (!data) return null;
+  const side = sd => {
+    const code = leagueOf(m, sd);
+    if (!code) return null;
+    const L = data.leagues[code], id = findTeam(L, m[sd].name, m.espn && m.espn[sd]);
+    if (!id) return null;
+    const venue = sd;
+    const o = { view: 'form', venue, last: 0, line: 2.5 };
+    const st = teamStats(L, id, o);
+    if (st.p < 3) return null;
+    const avg = venueAvg(L);
+    // Buts marqués à ce lieu comparés à la moyenne du championnat à ce lieu ; encaissés comparés aux buts de l'adversaire type
+    const att = (st.gf / st.p) / (sd === 'home' ? avg.home : avg.away);
+    const def = (st.ga / st.p) / (sd === 'home' ? avg.away : avg.home);
+    const lines = {};
+    for (const l of [1.5, 2.5, 3.5]) lines[l] = teamStats(L, id, { ...o, line: l }).over / st.p;
+    return { L, id, name: m[sd].name, st, att, def, btts: st.btts / st.p, lines,
+      attRank: rankIn(L, id, { view: 'att', venue, last: 0, line: 2.5 }), defRank: rankIn(L, id, { view: 'def', venue, last: 0, line: 2.5 }) };
+  };
+  const H = side('home'), A = side('away');
+  return H && A ? { H, A } : null;
+}
+// Voyant d'un duel attaque / défense : attaque forte contre défense qui prend beaucoup = 🟢 ; l'inverse = 🔴
+const duelLight = (att, def) => (att >= 1.2 && def >= 1.15 ? 'g' : att <= 0.8 && def <= 0.85 ? 'r' : att >= 1.2 || def >= 1.25 ? 'y' : att <= 0.75 || def <= 0.75 ? 'o' : 'n');
+const LIGHT = { g: '🟢', y: '🟡', n: '⚪', o: '🟠', r: '🔴' };
+// Seuils des lignes de buts (moyenne des deux équipes, chacune dans son contexte)
+const LINE_TH = { 1.5: [0.82, 0.6], 2.5: [0.65, 0.4], 3.5: [0.45, 0.2], btts: [0.65, 0.4] };
+const lineLight = (k, v) => (v >= LINE_TH[k][0] ? 'g' : v <= LINE_TH[k][1] ? 'r' : 'n');
+const ord = r => `${r}${r === 1 ? 'er' : 'e'}`;
+
+// Les alertes les plus nettes, en une phrase chacune (affichées aussi sur la fiche courte)
+export function faceAlerts(m) {
+  const f = faceData(m);
+  if (!f) return [];
+  const { H, A } = f, out = [];
+  const duel = (X, Y, xPlace, yPlace) => {
+    const l = duelLight(X.att, Y.def);
+    if (l === 'g') out.push([3, `🟢 Attaque de ${X.name} ${xPlace} (${ord(X.attRank.rank)}) contre défense de ${Y.name} ${yPlace} (${ord(Y.defRank.rank)} sur ${Y.defRank.size}) : ${X.name} devrait marquer`]);
+    if (l === 'r') out.push([3, `🔴 ${X.name} marque peu ${xPlace} (${ord(X.attRank.rank)}) et ${Y.name} défend bien ${yPlace} (${ord(Y.defRank.rank)}) : peu de buts de ${X.name}`]);
+  };
+  duel(H, A, 'à domicile', 'à l\'extérieur');
+  duel(A, H, 'à l\'extérieur', 'à domicile');
+  const p = v => Math.round(v * 100);
+  for (const [k, label] of [[2.5, '+2,5 buts'], ['btts', 'Les deux marquent'], [1.5, '+1,5 buts'], [3.5, '+3,5 buts']]) {
+    const hv = k === 'btts' ? H.btts : H.lines[k], av = k === 'btts' ? A.btts : A.lines[k], l = lineLight(k, (hv + av) / 2);
+    if (l === 'g' && hv >= LINE_TH[k][0] - 0.1 && av >= LINE_TH[k][0] - 0.1) out.push([2, `🟢 ${label} : ${p(hv)} % des matchs de ${H.name} à domicile, ${p(av)} % de ${A.name} à l'extérieur`]);
+    if (l === 'r' && hv <= LINE_TH[k][1] + 0.1 && av <= LINE_TH[k][1] + 0.1) out.push([2, `🔴 ${label} : seulement ${p(hv)} % des matchs de ${H.name} à domicile, ${p(av)} % de ${A.name} à l'extérieur`]);
+  }
+  return out.sort((x, y) => y[0] - x[0]).map(x => x[1]).slice(0, 3);
+}
+
+// Le tableau face-à-face complet (fiche du match)
+export function faceHtml(m) {
+  const f = faceData(m);
+  if (!f) return data ? '' : '<p class="small muted">Chargement des classements…</p>';
+  const { H, A } = f;
+  const n1 = x => x.toFixed(1).replace('.', ','), p = v => `${Math.round(v * 100)} %`;
+  const att = X => `<b>${n1(X.st.gf / X.st.p)}</b> marqués/m · ${ord(X.attRank.rank)}`;
+  const def = X => `<b>${n1(X.st.ga / X.st.p)}</b> encaissés/m · ${ord(X.defRank.rank)}`;
+  // Une ligne par comparaison : voyant + titre, puis les deux équipes côte à côte (lisible sur téléphone)
+  const row = (light, label, left, right) => `<div class="fc-row"><div class="fc-head">${LIGHT[light]} ${label}</div>
+    <div class="fc-vals"><span><small>${esc(H.name)} · dom.</small>${left}</span><span><small>${esc(A.name)} · ext.</small>${right}</span></div></div>`;
+  const lines = [[1.5, '+1,5 buts'], [2.5, '+2,5 buts'], [3.5, '+3,5 buts'], ['btts', 'Les 2 marquent']].map(([k, label]) => {
+    const hv = k === 'btts' ? H.btts : H.lines[k], av = k === 'btts' ? A.btts : A.lines[k];
+    return row(lineLight(k, (hv + av) / 2), label, p(hv), p(av));
+  }).join('');
+  const alerts = faceAlerts(m);
+  return `<div class="face">
+    ${alerts.length ? `<div class="face-alerts">${alerts.map(t => `<p>${esc(t)}</p>`).join('')}</div>` : '<p class="small muted">Rien de très marqué entre ces deux équipes.</p>'}
+    <div class="fc-list">
+      ${row(duelLight(H.att, A.def), `Attaque de ${esc(H.name)} contre défense de ${esc(A.name)}`, att(H), def(A))}
+      ${row(duelLight(A.att, H.def), `Attaque de ${esc(A.name)} contre défense de ${esc(H.name)}`, def(H), att(A))}
+      ${lines}
+    </div>
+    <p class="small muted">Toute la saison : ${esc(H.name)} dans ses ${H.st.p} matchs à domicile, ${esc(A.name)} dans ses ${A.st.p} matchs à l'extérieur${Math.min(H.st.p, A.st.p) < 5 ? ' (peu de matchs : à prendre avec prudence)' : ''}. Rangs : classement à domicile ou à l'extérieur du championnat. 🟢 favorable · 🟡 un des deux signes · ⚪ rien de net · 🔴 défavorable.</p>
+  </div>`;
+}
+
 // ---------- 3. La recherche : fiche d'une équipe ----------
 // Toutes les équipes connues dont le nom ressemble à la recherche → [{ code, id, name }]
 export function searchTeams(q) {

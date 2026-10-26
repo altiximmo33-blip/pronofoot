@@ -28,8 +28,10 @@ function outcome(lh, la) {
   return { m, home, draw, away };
 }
 
+// (lettres scandinaves, allemandes, polonaises… converties plutôt que supprimées : « Brøndby » → « brondby »)
 export const norm = s => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
-  .toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+  .toLowerCase().replace(/ø/g, 'o').replace(/æ/g, 'ae').replace(/œ/g, 'oe').replace(/ß/g, 'ss').replace(/ł/g, 'l').replace(/đ/g, 'd').replace(/ı/g, 'i')
+  .replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
 function samePlayer(a, b) {
   if (a.id && b.id) return a.id === b.id;
@@ -107,6 +109,7 @@ export const LEAGUE_GOALS = {
   'eng.2': 2.6, 'ger.2': 3.0, 'esp.2': 2.3, 'ita.2': 2.4, 'fra.2': 2.5, 'sco.1': 2.8, 'gre.1': 2.4, 'aut.1': 3.1, 'sui.1': 3.1,
   'den.1': 2.9, 'cze.1': 2.8, 'nor.1': 3.1, 'swe.1': 2.8, 'pol.1': 2.7, 'ukr.1': 2.6, 'cro.1': 2.7, 'srb.1': 2.8, 'isr.1': 2.6,
   'ksa.1': 2.9, 'rou.1': 2.5, 'cyp.1': 2.6, 'jpn.1': 2.6, 'eng.3': 2.7, 'eng.4': 2.6,
+  'arg.1': 2.2, 'mex.1': 3.0,   // Argentine : championnat à peu de buts ; Mexique : beaucoup
 };
 // Bilans de championnat ramenés à une échelle commune avant de comparer deux équipes de pays différents :
 // on corrige le nombre de buts du championnat, et le niveau (marquer dans un petit championnat compte moins)
@@ -444,6 +447,10 @@ export function analyzeMatch(m) {
     { key: '2BTTS', label: `${A} gagne et les deux équipes marquent`, p: sum((h, a) => a > h && h > 0) },
     { key: '1CS', label: `${H} gagne sans encaisser`, p: sum((h, a) => h > a && a === 0) },
     { key: '2CS', label: `${A} gagne sans encaisser`, p: sum((h, a) => a > h && h === 0) },
+    // Paris « sûrs » à jouer en simple (très probables, petite cote) : une équipe marque, moins de 4,5 buts
+    { key: 'H1G', label: `${H} marque`, p: 1 - pmf(0, lh) },
+    { key: 'A1G', label: `${A} marque`, p: 1 - pmf(0, la) },
+    { key: 'U45', label: 'Moins de 4,5 buts', p: 1 - over(4.5) },
   ].map(x => ({ ...x, edge: x.odd ? x.p * x.odd - 1 : null, minOdd: minOdd(x.p) }));
   // Pari « facile » : trop probable pour rapporter quelque chose (cote d'environ 1,50 ou moins),
   // simple victoire d'un gros favori, ou double chance du favori
@@ -629,6 +636,11 @@ function buildVerdict(c) {
     if (t.angle === 'derived') s -= 0.5;                                      // pari combiné : deux conditions à remplir
     if (t.angle === 'result' && lvlTight && c.m.comp && c.m.comp.type !== 'league') s -= 0.5; // coupe, niveaux proches
     if (['O35', 'O45'].includes(t.key) || /audacieux/.test(t.label || '')) s -= 0.5; // lignes ambitieuses : souvent ratées
+    // Bilan sur 9 jours (17-25/10, 300 matchs), vérifié sur deux périodes séparées :
+    // « les deux marquent et +2,5 » réussit 47 % pour 54 % annoncés, « moins de 2,5 / 1,5 » 3 fois sur 10 → moins solides ;
+    // « extérieur ou nul » 73 % pour 62 % annoncés, « une équipe marque 2 buts ou plus » 71 % pour 62 % → plus solides
+    if (t.key === 'BTTSO25' || t.key === 'U25' || t.key === 'U15') s -= 1;
+    if (['N2', 'H2G', 'A2G'].includes(t.key)) s += 0.5;
     if (mkGap == null) s = Math.min(s, 4);                                    // sans cote de bookmaker pour confirmer : 4/5 au plus
     if (scorer) s = Math.min(s, 3);                                           // un buteur n'est jamais « très sûr »
     t.solid = Math.max(1, Math.min(5, Math.round(s)));

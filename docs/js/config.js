@@ -46,6 +46,11 @@ export const COMPETITIONS = [
   { af: 365, name: 'Virsliga', country: 'Lettonie', flag: '🇱🇻', type: 'league' },
   // Japon (ajouté le 21/10) : stats, buteurs, compos via ESPN ; note du marché via football-data.co.uk
   { af: 98, name: 'J1 League', country: 'Japon', flag: '🇯🇵', type: 'league' },
+  // Argentine et Mexique (ajoutés le 26/10) : programme, stats, buteurs, compos via ESPN ; marché via football-data.co.uk
+  // (Géorgie, Bulgarie, Lettonie, Lituanie, Croatie, Israël, Malte, Chypre, Roumanie : saison en cours absente d'ESPN,
+  //  seulement visibles quand API-Football fonctionne, et sans statistiques)
+  { af: 128, name: 'Liga Profesional', country: 'Argentine', flag: '🇦🇷', type: 'league', odds: 'soccer_argentina_primera_division' },
+  { af: 262, name: 'Liga MX', country: 'Mexique', flag: '🇲🇽', type: 'league', odds: 'soccer_mexico_ligamx' },
 ];
 
 export const compByAf = Object.fromEntries(COMPETITIONS.map(c => [c.af, c]));
