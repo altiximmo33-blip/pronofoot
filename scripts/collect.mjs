@@ -487,7 +487,13 @@ async function enrichEspn(matches, bilan, today) {
         mem.goals = mem.goals.sort((x, y) => Date.parse(y.date) - Date.parse(x.date)).slice(0, 10);
         // Équipe type : onzes des 8 derniers matchs
         const xis = mem.xis.filter(x => recentIds.has(x.ev));
-        if (xis.length >= 3) (m.recentXI = m.recentXI || {})[side] = xis.map(x => x.xi);
+        if (xis.length >= 3) {
+          (m.recentXI = m.recentXI || {})[side] = xis.map(x => x.xi);
+          // Date de chaque onze : sert à mesurer l'enchaînement (matchs en 10 jours, joueurs qui ont tout joué)
+          (m.recentXIDates = m.recentXIDates || {})[side] = xis.map(x => x.date);
+        }
+        // Dates des derniers matchs joués (même sans compo connue), pour compter les matchs des 10 derniers jours
+        (m.recentDates = m.recentDates || {})[side] = done.slice(0, 6).map(e => e.date);
         // Buteurs en forme : buts sur les 6 derniers matchs
         const gl = mem.goals.filter(x => recentIds.has(x.ev)).slice(0, 6);
         if (gl.length >= 3) {
@@ -691,7 +697,7 @@ function dedupeEspn(matches) {
     for (const m of list) {
       if (espnIdOf(m) === id) continue;
       console.warn(`Doublon ESPN ${id} : infos ESPN retirées pour ${m.home.name} – ${m.away.name}`);
-      for (const k of ['espn', 'perf', 'fatigue', 'lastXI', 'recentXI', 'pens', 'level', 'squad', 'squadGames']) delete m[k];
+      for (const k of ['espn', 'perf', 'fatigue', 'lastXI', 'recentXI', 'recentXIDates', 'recentDates', 'pens', 'level', 'squad', 'squadGames']) delete m[k];
       m.notes = [];
     }
   }

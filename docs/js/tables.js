@@ -277,6 +277,22 @@ export function faceAlerts(m) {
   return out.sort((x, y) => y[0] - x[0]).map(x => x[1]).slice(0, 3);
 }
 
+// Signaux VERTS seulement, sous forme exploitable pour proposer le pari qui va avec :
+// { kind: 'att', side: 'home' | 'away', why } = une équipe devrait marquer ; { kind: 'line', key: 'O15' | 'O25' | 'O35' | 'BTTS', why }
+export function faceSignals(m) {
+  const f = faceData(m);
+  if (!f) return [];
+  const { H, A } = f, out = [], p = v => Math.round(v * 100);
+  if (duelLight(H.att, A.def) === 'g') out.push({ kind: 'att', side: 'home', why: `${H.name} marque beaucoup à domicile (${ord(H.attRank.rank)}), ${A.name} encaisse beaucoup à l'extérieur (${ord(A.defRank.rank)})` });
+  if (duelLight(A.att, H.def) === 'g') out.push({ kind: 'att', side: 'away', why: `${A.name} marque beaucoup à l'extérieur (${ord(A.attRank.rank)}), ${H.name} encaisse beaucoup à domicile (${ord(H.defRank.rank)})` });
+  for (const [k, key] of [[2.5, 'O25'], ['btts', 'BTTS'], [3.5, 'O35'], [1.5, 'O15']]) {
+    const hv = k === 'btts' ? H.btts : H.lines[k], av = k === 'btts' ? A.btts : A.lines[k];
+    if (lineLight(k, (hv + av) / 2) === 'g' && hv >= LINE_TH[k][0] - 0.1 && av >= LINE_TH[k][0] - 0.1)
+      out.push({ kind: 'line', key, why: `${p(hv)} % des matchs de ${H.name} à domicile, ${p(av)} % de ${A.name} à l'extérieur` });
+  }
+  return out;
+}
+
 // Le tableau face-à-face complet (fiche du match)
 export function faceHtml(m) {
   const f = faceData(m);

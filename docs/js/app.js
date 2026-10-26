@@ -2,8 +2,8 @@ import { COMPETITIONS } from './config.js';
 import * as E from './engine.js';
 const { state, onChange, start, loadAll, toggleHidden, clearAlerts, saveSettings, testKeys } = E;
 import { load, save } from './store.js';
-import { renderTables, loadTables, duelHtml, duelClick, bindDuelMarks, searchTeams, teamCardHtml, faceHtml, faceAlerts } from './tables.js';
-import { topPicks, tipResult, bestSlot, rotationText, levelGap, statGames, teamProfile, keyNames, bigTurn, seasonXI, similarity, ESPN_CODES } from './core.js';
+import { renderTables, loadTables, duelHtml, duelClick, bindDuelMarks, searchTeams, teamCardHtml, faceHtml, faceAlerts, faceSignals } from './tables.js';
+import { topPicks, tipResult, bestSlot, rotationText, levelGap, statGames, teamProfile, keyNames, bigTurn, seasonXI, similarity, ESPN_CODES, loadOf, freshEdge } from './core.js';
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -669,7 +669,8 @@ $('#match-list').addEventListener('click', e => {
     if (!m || !a) return;
     // Piste précise (bouton ＋ d'une piste), sinon la meilleure piste du match, sinon la victoire du favori
     const main = a.verdict.code === 'skip' ? null : a.tips.filter(x => !String(x.key).startsWith('SC')).sort((x, y) => y.p - x.p)[0];
-    const t = (b.dataset.key && a.tips.find(x => x.key === b.dataset.key)) || main
+    // (un pari d'un signal vert peut venir du face-à-face et ne pas être une piste du modèle : on le cherche aussi dans les marchés)
+    const t = (b.dataset.key && (a.tips.find(x => x.key === b.dataset.key) || a.markets.find(x => x.key === b.dataset.key))) || main
       || (a.p.home >= a.p.away ? { key: '1', label: `Victoire ${m.home.name}`, p: a.p.home } : { key: '2', label: `Victoire ${m.away.name}`, p: a.p.away });
     if (!b.dataset.key && inPerso(m.id)) { perso = perso.filter(x => x.id !== m.id); savePerso(); } else togglePerso(m, t);
     renderMatches(); return;
@@ -900,20 +901,55 @@ function compactHtml(m) {
       <span class="badge ${v.code}">${esc(v.label)}</span>
     </button>
     <button class="m-fold" data-act="fold" data-key="${esc(mk)}" aria-label="${mf ? 'Déplier' : 'Replier'} ce match">${mf ? '▸' : '▾'}</button></div>`;
-  if (mf) return `<article class="card compact is-folded v-${v.code}${done ? ' is-done' : ''}${state.hidden.has(m.id) ? ' is-hidden' : ''}" data-id="${esc(m.id)}">${headRow}${liveHtml(m, t)}</article>`;
-  return `<article class="card compact v-${v.code}${done ? ' is-done' : ''}${state.hidden.has(m.id) ? ' is-hidden' : ''}" data-id="${esc(m.id)}">
+  const cls = `card compact v-${v.code}${done ? ' is-done' : ''}${state.hidden.has(m.id) ? ' is-hidden' : ''}`;
+  if (mf) return `<article class="${cls} is-folded" data-id="${esc(m.id)}">${headRow}${liveHtml(m, t)}</article>`;
+  // Match terminé : le score et la meilleure piste (gagnée / perdue)
+  if (done) return `<article class="${cls}" data-id="${esc(m.id)}">${headRow}${liveHtml(m, t)}
+    ${t ? `<div class="c-line"><span>${esc(t.label)}</span><b>${pct(t.p)}</b></div>` : ''}<div class="c-chips">${favBtn}</div></article>`;
+  // Fiche courte : l'état de la compo, puis SEULEMENT les signaux verts, chacun avec son pari (le détail est dans la fiche)
+  const greens = greenLines(m, a);
+  const status = official ? '<div class="c-status ok">✓ Compo officielle · analyse mise à jour avec la compo</div>'
+    : mins > 0 ? `<div class="c-status">⏳ Compo attendue vers ${hhmmFr(m.kickoff - 3600000)} · analyse provisoire</div>` : '';
+  return `<article class="${cls}" data-id="${esc(m.id)}">
     ${headRow}
     ${liveHtml(m, t)}
-    ${banner}
-    ${!done && v.code !== 'skip' && a.tips.length ? '' : `<div class="c-line">${t ? `<span>${esc(t.label)} <span class="muted">· ${oddTxt(t)}</span>${t.edge > 0.06 ? ' <b class="tip-ok">bonne cote</b>' : ''}</span><b>${pct(t.p)} ${solidTxt(t)}</b>` : `<span class="muted">${v.code === 'skip' ? 'Aucune piste retenue' : 'Pas de piste solide'}</span>`}</div>`}
-    ${!done ? keyPoints(m, a).slice(0, 2).map(l => `<div class="c-plan">${esc(l)}</div>`).join('') : ''}
-    ${!done ? faceAlerts(m).slice(0, 2).map(l => `<div class="c-face">${esc(l)}</div>`).join('') : ''}
-    ${done || v.code === 'skip' ? '' : picksHtml(m, a, 4)}
-    ${!done && v.reason ? `<div class="c-reason ${v.code}">${v.code === 'play' ? '✅' : v.code === 'watch' ? '⏳' : '✋'} ${esc(v.reason)}</div>` : ''}
-    ${alertBoxHtml(infos)}${goodInfosHtml(infos)}
-    <div class="c-chips">${chips}${favBtn}</div>
-    ${done ? '' : fl.box}
+    ${status}
+    ${greens.length ? `<ul class="greens">${greens.map(g => {
+      const on = inPerso(m.id, g.key);
+      return `<li><button class="green${on ? ' on' : ''}" data-act="perso" data-key="${esc(g.key)}" aria-pressed="${on}">
+        <span class="g-dot">🟢</span><span class="g-txt"><b>${esc(g.label)}</b> <span class="g-p">${pct(g.p)}</span><small>${esc(g.why)}</small></span><span class="g-add">${on ? '✓' : '＋'}</span></button></li>`;
+    }).join('')}</ul>` : '<div class="c-none">Selon les statistiques, rien de net ne ressort sur ce match.</div>'}
+    <div class="c-chips">${favBtn}<button class="link c-more" data-act="open">Voir l'analyse ›</button></div>
   </article>`;
+}
+
+// 🟢 Signaux verts de la fiche courte : ce que les statistiques ET le modèle disent ensemble, chacun avec son pari.
+// 1) Face-à-face domicile / extérieur (classements) → le pari correspondant, seulement si le modèle le donne à 55 % ou plus ;
+// 2) les pistes de l'analyse complète notées 4/5 ou plus. Jamais de rouge ici : il est dans la fiche détaillée.
+function greenLines(m, a) {
+  const out = [];
+  const mk = k => a.markets.find(x => x.key === k);
+  const add = (t, why) => {
+    if (!t || t.p < 0.55 || t.p > 0.92 || out.some(o => o.key === t.key)) return;
+    out.push({ key: t.key, label: t.label, p: t.p, why });
+  };
+  for (const s of faceSignals(m)) {
+    if (s.kind === 'att') {
+      const two = mk(s.side === 'home' ? 'H2G' : 'A2G'), one = mk(s.side === 'home' ? 'H1G' : 'A1G');
+      add(two && two.p >= 0.55 ? two : one, s.why);
+    } else add(mk(s.key), s.why);
+  }
+  // Explication raccourcie à environ 130 caractères, coupée sur un mot (pas sur les points de « F.C. »)
+  // Fatigue : l'équipe la plus fraîche face à une équipe qui enchaîne (matchs en 10 jours, joueurs qui ont tout joué)
+  const fe = freshEdge(m);
+  if (fe) {
+    const s = fe.fresh, t = [mk(s === 'home' ? '1' : '2'), mk(s === 'home' ? '1N' : 'N2')].find(x => x && x.p >= 0.55 && x.p <= 0.92);
+    add(t, `🔋 ${m[s].name} plus frais. ${fe.text}`);
+  }
+  const firstSentence = s => { const t = String(s || '').trim(); if (t.length <= 130) return t; const c = t.slice(0, 130); return c.slice(0, c.lastIndexOf(' ')) + '…'; };
+  a.tips.filter(t => !String(t.key).startsWith('SC') && (t.solid || 0) >= 4)
+    .forEach(t => add(t, `Analyse complète, solidité ${t.solid}/5 : ${firstSentence(tipWhy(t, m, a))}`));
+  return out.slice(0, 3);
 }
 
 function cardHtml(m) {
@@ -1338,6 +1374,25 @@ function pitchHtml(m, a, side) {
   </div>`;
 }
 
+// 🔋 Fatigue : pour chaque équipe, matchs des 10 derniers jours, joueurs qui les ont tous commencés, repos
+function fatigueHtml(m) {
+  const L = { home: loadOf(m, 'home'), away: loadOf(m, 'away') };
+  if (!L.home && !L.away) return '';
+  const fe = freshEdge(m);
+  const line = sd => {
+    const x = L[sd];
+    if (!x) return `<p><b>${esc(m[sd].name)}</b> · pas de données</p>`;
+    const icon = x.heavy ? '😓' : x.n <= 1 ? '🔋' : '•';
+    const iron = x.ironmen != null ? ` · <b>${x.ironmen} joueurs</b> ont commencé tous ces matchs` : x.n >= 2 ? ' · compos de ces matchs pas toutes connues' : '';
+    // Peu de joueurs ont tout joué : l'équipe a fait tourner, la fatigue est répartie
+    const rot = x.n >= 2 && x.ironmen != null && x.ironmen <= 4 ? ' · a fait tourner : fatigue limitée' : '';
+    return `<p>${icon} <b>${esc(m[sd].name)}</b> · ${x.n} match${x.n > 1 ? 's' : ''} sur les 10 derniers jours${iron} · ${x.rest} jour${x.rest > 1 ? 's' : ''} de repos${x.heavy ? ' · <b>équipe chargée</b>' : ''}${rot}</p>`;
+  };
+  return `${fe ? `<p class="fat-edge">🟢 <b>${esc(m[fe.fresh].name)} arrive plus frais</b> que ${esc(m[fe.tired].name)}.</p>` : '<p class="small muted">Pas d\'écart de fraîcheur net entre les deux équipes.</p>'}
+    ${line('home')}${line('away')}
+    <p class="small muted">« Chargée » : 3 matchs ou plus en 10 jours avec au moins 6 joueurs qui ont tout commencé, ou 2 matchs en 4 jours avec 8 joueurs qui ont tout commencé. « Plus frais » aussi quand l'adversaire a eu 3 jours de repos de moins sans faire tourner. Indicateur affiché pour vous aider : il n'est pas encore compté dans les probabilités (seul l'écart de jours de repos l'est).</p>`;
+}
+
 // Poste d'un buteur : un défenseur qui a marqué 2 buts n'est pas un buteur régulier
 const POS_FR = { F: 'attaquant', M: 'milieu', D: 'défenseur ⚠ pas un buteur régulier', G: 'gardien' };
 
@@ -1389,6 +1444,7 @@ function detailHtml(m, a) {
   return `
   <div class="detail">
     ${sec('🆚 Face-à-face : domicile contre extérieur', faceHtml(m) || '<p class="small muted">Pas assez de matchs pour comparer ces deux équipes.</p>', true)}
+    ${fatigueHtml(m) ? sec('🔋 Fatigue et enchaînement des matchs', fatigueHtml(m), true) : ''}
     ${sec('📊 Classement et forme des deux équipes', duelHtml(m), false)}
     ${sec(`👥 Compositions${official ? ' <span class="chip ok">officielles</span>' : ' <span class="chip">équipe type</span>'}`, composBody, true)}
     ${scorers.length || pens.length ? sec('⚽ Buteurs et tireurs de penalty', `${pensHtml}<ul class="play-list">${scorers.map(p => `<li><div><b>${esc(p.name)}${takers.has(lastName(p.name)) ? ' 🎯' : ''}</b><span class="muted small">${esc(p.team)}${POS_FR[p.line] ? ` · ${POS_FR[p.line]}` : ''} · ${p.goals} but${p.goals > 1 ? 's' : ''}${p.played ? ` en ${p.played} match${p.played > 1 ? 's' : ''}` : ''} · ${{ titulaire: 'titulaire ✓', remplacant: 'sur le banc', incertain: 'incertain', probable: 'compo pas encore connue' }[p.status] || ''}${p.hot ? ` · 🔥 ${hotTxt(p)}` : ''}${p.p2 >= 0.1 ? ` · doublé ${pct(p.p2)}` : ''}</span></div><b class="p">${pct(p.p1)}</b></li>`).join('')}</ul>`) : ''}

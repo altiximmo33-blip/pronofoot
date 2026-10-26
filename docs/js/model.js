@@ -222,6 +222,45 @@ export function seasonXI(m, side) {
   return { xi: [gk, ...field].filter(Boolean), games };
 }
 
+// Enchaînement des matchs d'une équipe avant ce match : matchs joués sur les 10 derniers jours,
+// joueurs qui les ont TOUS commencés, jours de repos → { n, days, rest, ironmen, xiKnown, heavy } ou null
+export function loadOf(m, side) {
+  const DAY = 86400000, k = m.kickoff;
+  const dates = ((m.recentDates && m.recentDates[side]) || []).map(d => Date.parse(d)).filter(t => t < k).sort((a, b) => b - a);
+  if (!dates.length) return null;
+  const inWin = dates.filter(t => k - t <= 10 * DAY);
+  const rest = Math.floor((k - dates[0]) / DAY);
+  const days = inWin.length ? Math.ceil((k - inWin[inWin.length - 1]) / DAY) : 0;
+  // Joueurs titulaires à chacun de ces matchs (onzes dont on connaît la date)
+  const xis = (m.recentXI && m.recentXI[side]) || [], xd = (m.recentXIDates && m.recentXIDates[side]) || [];
+  const winXI = xis.filter((xi, i) => xd[i] && k - Date.parse(xd[i]) <= 10 * DAY && Date.parse(xd[i]) < k);
+  let ironmen = null;
+  if (winXI.length >= 2 && winXI.length === inWin.length) {
+    const cnt = new Map();
+    winXI.forEach(xi => xi.forEach(p => cnt.set(p.n, (cnt.get(p.n) || 0) + 1)));
+    ironmen = [...cnt.values()].filter(c => c === winXI.length).length;
+  }
+  // Chargé : 3 matchs ou plus en 10 jours avec au moins 6 joueurs qui ont tout joué, ou 2 matchs en 4 jours et 8 joueurs
+  const heavy = (inWin.length >= 3 && (ironmen == null || ironmen >= 6)) || (inWin.length >= 2 && rest <= 3 && ironmen != null && ironmen >= 8);
+  return { n: inWin.length, days, rest, ironmen, xiKnown: winXI.length, heavy };
+}
+// Comparaison des deux équipes : laquelle arrive la plus fraîche ? → { fresh: 'home'|'away', tired, text } ou null
+export function freshEdge(m) {
+  const H = loadOf(m, 'home'), A = loadOf(m, 'away');
+  if (!H || !A) return null;
+  const desc = (L, name) => `${name} : ${L.n} match${L.n > 1 ? 's' : ''} en ${Math.max(L.days, 1)} jours${L.ironmen != null ? `, ${L.ironmen} joueurs les ont tous commencés` : ''}, ${L.rest} j de repos`;
+  for (const [t, f] of [['home', 'away'], ['away', 'home']]) {
+    const T = t === 'home' ? H : A, F = f === 'home' ? H : A;
+    // L'une est chargée, l'autre non, et a au moins un jour de repos de plus ou un match de moins ;
+    // ou bien gros écart de repos (3 jours ou plus) sans que l'équipe fatiguée ait fait tourner (6 joueurs ou plus ont tout joué)
+    const heavyGap = T.heavy && !F.heavy && (F.rest > T.rest || F.n < T.n);
+    const restGap = T.rest <= 4 && F.rest - T.rest >= 3 && T.n >= 2 && (T.ironmen == null || T.ironmen >= 6);
+    if (heavyGap || restGap)
+      return { fresh: f, tired: t, text: `${desc(T, m[t].name)} · ${desc(F, m[f].name)}` };
+  }
+  return null;
+}
+
 // Gros turn-over : poids des absents de 4 ou plus (un cadre compte 1, un titulaire habituel 0,5)
 export const bigTurn = r => !!r && (r.weight != null ? r.weight >= 4 : r.changes >= 5);
 

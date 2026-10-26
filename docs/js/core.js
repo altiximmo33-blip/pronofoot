@@ -1,7 +1,7 @@
 // Construction des matchs à partir des données brutes (football-data.org + API-Football).
 // Module pur (pas d'accès réseau ni fichier) : utilisé par le robot et testable dans un navigateur.
-import { teamSplit, norm, lineOf, bigTurn, seasonXI } from './model.js';
-export { lineOf, bigTurn, seasonXI };
+import { teamSplit, norm, lineOf, bigTurn, seasonXI, loadOf, freshEdge } from './model.js';
+export { lineOf, bigTurn, seasonXI, loadOf, freshEdge };
 import { compByAf } from './config.js';
 
 // Compétitions couvertes gratuitement par football-data.org (identifiant API-Football → code)

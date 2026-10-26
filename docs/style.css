@@ -212,6 +212,20 @@ main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
 .fc-vals span { display: grid; min-width: 0; }
 .fc-vals small { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .c-face { padding: 2px 14px; font-size: 13px; font-weight: 600; line-height: 1.4; }
+/* Fiche courte : état de la compo + signaux verts (chacun avec son pari) */
+.c-status { padding: 2px 14px 4px; font-size: 12.5px; color: var(--muted); }
+.c-status.ok { color: var(--go); font-weight: 600; }
+.greens { list-style: none; margin: 4px 0 2px; padding: 0 10px; display: grid; gap: 6px; }
+.green { display: flex; align-items: flex-start; gap: 8px; width: 100%; text-align: left; background: var(--go-soft); border: 1px solid transparent; border-radius: 10px; padding: 8px 10px; color: var(--text); cursor: pointer; }
+.green.on { border-color: var(--go); }
+.g-dot { flex: none; font-size: 13px; line-height: 1.5; }
+.g-txt { flex: 1; min-width: 0; display: grid; gap: 2px; font-size: 14px; }
+.g-txt small { color: var(--muted); font-size: 12px; line-height: 1.35; }
+.g-p { color: var(--go); font-weight: 700; }
+.g-add { flex: none; font-weight: 700; color: var(--go); font-size: 16px; }
+.c-none { padding: 6px 14px; font-size: 13px; color: var(--muted); font-style: italic; }
+.c-more { margin-left: auto; font-weight: 600; }
+.fat-edge { color: var(--go); }
 /* Paris sûrs */
 .combo-card.safe { border-color: var(--go); }
 .combo-mini .cm-txt small.go { color: var(--go); font-weight: 600; }
