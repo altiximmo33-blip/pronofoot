@@ -1393,6 +1393,13 @@ function fatigueHtml(m) {
     <p class="small muted">« Chargée » : 3 matchs ou plus en 10 jours avec au moins 6 joueurs qui ont tout commencé, ou 2 matchs en 4 jours avec 8 joueurs qui ont tout commencé. « Plus frais » aussi quand l'adversaire a eu 3 jours de repos de moins sans faire tourner. Indicateur affiché pour vous aider : il n'est pas encore compté dans les probabilités (seul l'écart de jours de repos l'est).</p>`;
 }
 
+// Rubriques ouvertes / fermées dans les fiches, gardées pendant la visite (la page se redessine souvent)
+const secState = new Map();
+document.addEventListener('toggle', e => {
+  const d = e.target;
+  if (d && d.matches && d.matches('details.sec[data-sec]')) secState.set(d.dataset.sec, d.open);
+}, true);
+
 // Poste d'un buteur : un défenseur qui a marqué 2 buts n'est pas un buteur régulier
 const POS_FR = { F: 'attaquant', M: 'milieu', D: 'défenseur ⚠ pas un buteur régulier', G: 'gardien' };
 
@@ -1430,7 +1437,12 @@ function detailHtml(m, a) {
     ? `<p class="small">Bookmakers : ${esc(H)} ${pct(a.marketNow.pH)}, nul ${pct(a.marketNow.pD)}, ${esc(A)} ${pct(a.marketNow.pA)}. Nos stats seules : ${pct(a.modelP.home)} / ${pct(a.modelP.draw)} / ${pct(a.modelP.away)}. Le résultat affiché mélange les deux.</p>` : '';
   const easy = a.verdict.easy && a.verdict.easy.length ? `<p class="small muted">Écartés car trop évidents : ${esc(a.verdict.easy.map(x => `${x.label} (${pct(x.p)})`).join(', '))}.</p>` : '';
 
-  const sec = (title, body, open) => `<details class="sec"${open ? ' open' : ''}><summary>${title}</summary><div class="sec-body">${body}</div></details>`;
+  // Rubrique repliable : on se souvient si vous l'avez ouverte ou fermée (sinon elle se refermait à chaque appui sur un filtre)
+  const sec = (title, body, open) => {
+    const key = m.id + '|' + String(title).replace(/<[^>]+>/g, '').replace(/[^a-zA-Zéèàùç ]/g, '').trim().slice(0, 30);
+    const isOpen = secState.has(key) ? secState.get(key) : open;
+    return `<details class="sec" data-sec="${esc(key)}"${isOpen ? ' open' : ''}><summary>${title}</summary><div class="sec-body">${body}</div></details>`;
+  };
   const pens = ['home', 'away'].map(s => penInfo(m, s)).filter(Boolean);
   const takers = new Set(pens.filter(p => p.main).map(p => lastName(p.main.name)));
   // Penalties de chaque équipe cette saison (tirés / marqués)

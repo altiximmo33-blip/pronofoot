@@ -137,8 +137,11 @@ function baseExpectedGoals(m) {
   // Match de coupe : bilan du championnat de chaque équipe, à poids égal avec celui de la compétition
   const nd = m.domStats ? normDomestic(m) : null;
   const D = nd ? lambdaFrom(nd.stats, nd.ts) : null;
-  // 1re journée d'une coupe (0 match joué) : le bilan du championnat sert seul
-  const G = lambdaFrom(stats, m.teamStats) || D;
+  // Coupe nationale : seul le championnat compte. Les tours précédents se jouent souvent contre des amateurs
+  // (bilan du 27/10 : Francfort donné favori à 80 % à Hambourg à cause d'un 11-0 au 1er tour de Coupe d'Allemagne).
+  // 1re journée d'une coupe d'Europe (0 match joué) : le bilan du championnat sert seul aussi.
+  const domOnly = D && m.comp && m.comp.type === 'cup';
+  const G = domOnly ? D : (lambdaFrom(stats, m.teamStats) || D);
   if (G) {
     const parts = [{ w: W_GOALS, lh: G.lh * HOME_BOOST * GOAL_LEVEL, la: G.la * GOAL_LEVEL }];
     if (D && D !== G) parts.push({ w: W_GOALS, lh: D.lh * HOME_BOOST * GOAL_LEVEL, la: D.la * GOAL_LEVEL });
@@ -414,8 +417,15 @@ export function analyzeMatch(m) {
   const base = baseExpectedGoals(m);
   const ph = teamPresence(m, 'home'), pa = teamPresence(m, 'away');
 
-  // m.adj : ajustement selon le comportement face au niveau de l'adversaire du jour (±15 % max)
-  const adj = m.adj || {};
+  // m.adj : ajustement selon le comportement face au niveau de l'adversaire du jour (±15 % max).
+  // Coupe nationale : ce comportement est mesuré sur les tours précédents (souvent contre des amateurs) → on n'en
+  // garde que l'écart de niveau en championnat (même formule que le robot : exp(0,012 × écart), borné à ±30 %)
+  let adj = m.adj || {};
+  const Lc = m.level;
+  if (m.comp && m.comp.type === 'cup' && Lc && Lc.home && Lc.away) {
+    const f = Math.max(1 / 1.3, Math.min(1.3, Math.exp(0.012 * (Lc.home.S - Lc.away.S))));
+    adj = { home: f, away: 1 / f };
+  }
   let lh = base.lh * ph.factor * formFactor(m.form && m.form.home) * pa.defPenalty * (adj.home || 1);
   let la = base.la * pa.factor * formFactor(m.form && m.form.away) * ph.defPenalty * (adj.away || 1);
   // Coupe d'Europe entre équipes de niveau proche : l'avantage du terrain pèse plus que d'habitude
