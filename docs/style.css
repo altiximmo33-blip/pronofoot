@@ -226,6 +226,23 @@ main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
 .c-none { padding: 6px 14px; font-size: 13px; color: var(--muted); font-style: italic; }
 .c-more { margin-left: auto; font-weight: 600; }
 .fat-edge { color: var(--go); }
+/* Mes paris : formulaire et bilan */
+.drop.add { color: var(--go); font-weight: 700; }
+.drop.add.on { background: var(--go-soft); }
+.bet-form { display: grid; gap: 8px; margin-top: 10px; padding: 10px; border-radius: 10px; background: var(--panel2); }
+.bet-form p { margin: 0; }
+.bet-inputs { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.bet-inputs label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.bet-inputs input { padding: 9px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); font-size: 16px; }
+.bet-value.ok { color: var(--go); font-weight: 600; }
+.bet-value.bad { color: var(--bad); font-weight: 600; }
+.bet-msg { color: var(--bad); }
+.bets { display: grid; gap: 10px; }
+.bets-net { font-size: 28px; font-weight: 800; margin: 4px 0; }
+.bets-net.go, .bets b.go { color: var(--go); } .bets-net.bad, .bets b.bad { color: var(--bad); }
+.combo-card.bet.won { border-left: 4px solid var(--go); } .combo-card.bet.lost { border-left: 4px solid var(--bad); }
+.bet-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.bet-actions { display: flex; gap: 14px; flex-wrap: wrap; }
 /* Paris sûrs */
 .combo-card.safe { border-color: var(--go); }
 .combo-mini .cm-txt small.go { color: var(--go); font-weight: 600; }

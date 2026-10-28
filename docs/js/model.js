@@ -66,6 +66,8 @@ export function teamSplit(rows, row) {
 const PRIOR = 8, VENUE_WEIGHT = 0.5, HOME_BOOST = 1.08, GOAL_LEVEL = 1.05;
 // Avantage du terrain supplémentaire en coupe d'Europe quand les deux équipes ont un niveau proche
 const HOME_EURO = 1.1;
+// Correction des paris « gagne par 2 (ou 3) buts d'écart » : surestimés, surtout à l'extérieur (voir plus bas)
+const GAP_CAL = { 'H2+': 0.9, 'H3+': 0.9, 'A2+': 0.75, 'A3+': 0.75 };
 const shrink = (v, n) => (v * n + 1 * PRIOR) / (n + PRIOR);
 
 // --- 1. Buts attendus de base ------------------------------------------------
@@ -423,7 +425,8 @@ export function analyzeMatch(m) {
   let adj = m.adj || {};
   const Lc = m.level;
   if (m.comp && m.comp.type === 'cup' && Lc && Lc.home && Lc.away) {
-    const f = Math.max(1 / 1.3, Math.min(1.3, Math.exp(0.012 * (Lc.home.S - Lc.away.S))));
+    // (0,008 plutôt que 0,012 : en coupe, le petit club se bat — 27/10 : Leipzig 2-1 à Essen, Augsburg 4-2, Elversberg battu)
+    const f = Math.max(1 / 1.3, Math.min(1.3, Math.exp(0.008 * (Lc.home.S - Lc.away.S))));
     adj = { home: f, away: 1 / f };
   }
   let lh = base.lh * ph.factor * formFactor(m.form && m.form.home) * pa.defPenalty * (adj.home || 1);
@@ -500,7 +503,12 @@ export function analyzeMatch(m) {
     { key: 'H1G', label: `${H} marque`, p: 1 - pmf(0, lh) },
     { key: 'A1G', label: `${A} marque`, p: 1 - pmf(0, la) },
     { key: 'U45', label: 'Moins de 4,5 buts', p: 1 - over(4.5) },
-  ].map(x => ({ ...x, edge: x.odd ? x.p * x.odd - 1 : null, minOdd: minOdd(x.p) }));
+  ].map(x => {
+    // Calibrage des gros écarts (bilan 17-27/10, 176 favoris) : « gagne par 2 buts ou plus » arrive moins souvent
+    // que la loi de Poisson ne le dit — 38 % pour 48 % annoncés, et seulement 3 fois sur 14 pour un favori à l'extérieur
+    const p = x.p * (GAP_CAL[x.key] || 1);
+    return { ...x, p, edge: x.odd ? p * x.odd - 1 : null, minOdd: minOdd(p) };
+  });
   // Pari « facile » : trop probable pour rapporter quelque chose (cote d'environ 1,50 ou moins),
   // simple victoire d'un gros favori, ou double chance du favori
   const homeFav = o.home >= o.away;

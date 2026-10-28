@@ -30,6 +30,7 @@
   <nav class="tabs" id="tabs">
     <button data-tab="matches" class="active">Matchs <span class="count" id="c-matches"></span></button>
     <button data-tab="tables">Classements</button>
+    <button data-tab="bets">Mes paris</button>
     <button data-tab="results">Résultats</button>
     <button data-tab="alerts">Alertes <span class="count hot" id="c-alerts"></span></button>
     <button data-tab="settings">Paramètres</button>
@@ -80,6 +81,10 @@
       <div id="tables"></div>
     </section>
 
+    <section id="view-bets" class="view" hidden>
+      <div id="bets"></div>
+    </section>
+
     <section id="view-results" class="view" hidden>
       <div id="results"></div>
     </section>
@@ -95,9 +100,9 @@
   <script>
     // Mise à jour automatique de l'application : quand une nouvelle version est publiée
     // (version.json), le téléphone recharge tous les fichiers sans vider le cache à la main.
-    var APP_VERSION = '2026-10-27a';
+    var APP_VERSION = '2026-10-28b';
     var APP_FILES = ['index.html', 'aide.html', 'style.css', 'js/app.js', 'js/engine.js', 'js/model.js',
-      'js/core.js', 'js/config.js', 'js/claude.js', 'js/store.js', 'js/today.js', 'js/tables.js'];
+      'js/core.js', 'js/config.js', 'js/claude.js', 'js/store.js', 'js/today.js', 'js/tables.js', 'js/bets.js'];
     window.pfUpdate = function (force) {
       return fetch('version.json?t=' + Date.now(), { cache: 'no-store' })
         .then(function (r) { return r.ok ? r.json() : {}; })

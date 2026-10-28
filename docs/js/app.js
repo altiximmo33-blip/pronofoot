@@ -2,6 +2,7 @@ import { COMPETITIONS } from './config.js';
 import * as E from './engine.js';
 const { state, onChange, start, loadAll, toggleHidden, clearAlerts, saveSettings, testKeys } = E;
 import { load, save } from './store.js';
+import { addBet, settleBets, betsHtml, valueText, removeBet, setBet } from './bets.js';
 import { renderTables, loadTables, duelHtml, duelClick, bindDuelMarks, searchTeams, teamCardHtml, faceHtml, faceAlerts, faceSignals } from './tables.js';
 import { topPicks, tipResult, bestSlot, rotationText, levelGap, statGames, teamProfile, keyNames, bigTurn, seasonXI, similarity, ESPN_CODES, loadOf, freshEdge } from './core.js';
 
@@ -32,6 +33,7 @@ function showTab(t) {
   if (t === 'settings') renderSettings();
   // Classements : les équipes du jour sont signalées d'un point
   if (t === 'tables') renderTables($('#tables'), state.matches.flatMap(m => [m.home.name, m.away.name]));
+  if (t === 'bets') renderBets();
   if (t === 'alerts') { seenAlerts = state.alerts.length ? state.alerts[0].t : 0; save('seenAlerts', seenAlerts); }
   render();
 }
@@ -45,6 +47,27 @@ document.addEventListener('click', e => {
 ['#f-search', '#f-comp', '#f-verdict', '#f-sort', '#f-hidden', '#q-team'].forEach(s => $(s).addEventListener('input', renderMatches));
 // Classements : chargés une fois au démarrage (fiches de match, recherche), puis la page se redessine
 loadTables(() => renderMatches());
+
+// 💶 Mes paris : l'onglet, ses boutons, et la vérification automatique des résultats (au démarrage puis toutes les 5 min)
+function renderBets() { $('#bets').innerHTML = betsHtml(); }
+$('#bets').addEventListener('click', e => {
+  const b = e.target.closest('[data-bet]');
+  if (!b) return;
+  if (b.dataset.bet === 'del') { if (confirm('Supprimer ce pari de votre bilan ?')) removeBet(b.dataset.id); }
+  else setBet(b.dataset.id, b.dataset.bet);
+  renderBets();
+});
+const doSettle = async () => { if (await settleBets(state.live) && tab === 'bets') renderBets(); };
+setTimeout(doSettle, 8000);
+setInterval(doSettle, 5 * 60000);
+// Formulaire « J'ai joué ce pari » : on garde ce qui est tapé (la page se redessine souvent) et on met à jour l'avis sur la cote
+$('#match-list').addEventListener('input', e => {
+  const i = e.target.closest('[data-bet-in]');
+  if (!i) return;
+  betDraft[i.dataset.betIn] = i.value;
+  const f = i.closest('.bet-form'), v = valueText(+f.dataset.fair, parseFloat(String(betDraft.odd).replace(',', '.')));
+  const el = f.querySelector('.bet-value'); el.textContent = v.t; el.className = `small bet-value ${v.k}`;
+});
 // Actualiser : recharge aussi les fichiers de l'application (remplace le vidage du cache)
 $('#btn-refresh').addEventListener('click', () => window.pfUpdate ? window.pfUpdate(true) : loadAll());
 $('#btn-clear-alerts').addEventListener('click', clearAlerts);
@@ -413,6 +436,21 @@ function safeBets(list) {
   return out.sort((x, y) => y.tip.p - x.tip.p).slice(0, 6).sort(byTime);
 }
 
+// ⭐ Conseil du jour : les 5 meilleures pistes de la journée, une par match.
+// Règle choisie après test sur 11 jours (17-27/10) : solidité 4/5 ou plus, 60 % ou plus, et seulement les types de paris
+// qui ont tenu (domicile ou nul, extérieur ou nul, une équipe marque 2 buts ou plus, +2,5 buts) → 43 sur 52 (83 %).
+// Les « gagne par 2 buts d'écart » en sont exclus : 38 % de réussite seulement (21 % pour un favori à l'extérieur).
+const CONSEIL_TYPES = ['N2', '1N', 'H2G', 'A2G', 'O25'];
+function conseilDuJour(list) {
+  const out = [];
+  for (const m of list.filter(m => usable(m) && m.kickoff > Date.now())) {
+    const a = state.analyses[m.id];
+    const t = a.tips.filter(t => (t.solid || 0) >= 4 && t.p >= 0.6 && CONSEIL_TYPES.includes(t.key)).sort((x, y) => y.solid - x.solid || y.p - x.p)[0];
+    if (t) out.push({ m, tip: t, why: tipWhy(t, m, a) });
+  }
+  return out.sort((x, y) => y.tip.solid - x.tip.solid || y.tip.p - x.tip.p).slice(0, 5).sort(byTime);
+}
+
 // Compos officielles connues pour les deux équipes
 const isOff = m => !!(m.lineups && m.lineups.home && m.lineups.home.status === 'officielle' && m.lineups.away && m.lineups.away.status === 'officielle');
 // Gain visé par le gros coup (mémorisé sur le téléphone)
@@ -477,11 +515,19 @@ function planHtml(list) {
       ${cardHead('c-small', '😌 Petit combiné', 'Les pistes les plus solides de la journée, cote ≈ 3.')}
       ${isFold('c-small') ? '' : P.smalls.map((legs, k) => `${P.smalls.length > 1 ? `<p class="step small"><b>${k ? 'Ou bien ②' : '①'}</b></p>` : ''}<ul class="combo-mini">${legs.map(li).join('')}</ul>${total(legs)}`).join('')}
     </div>` : '';
+  // ⭐ Conseil du jour
+  const conseil = conseilDuJour(list);
+  const conseilCard = `<div class="combo-card best conseil">
+      ${cardHead('c-conseil', '⭐ Conseil du jour', 'Les meilleures pistes de la journée, une par match.')}
+      ${isFold('c-conseil') ? '' : conseil.length ? `<ul class="combo-mini">${conseil.map(x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span><small><b>${esc(x.tip.label)}</b> · cote juste ≈ ${fmtOdd(1 / x.tip.p)} · ${solidTxt(x.tip)}</small><small class="muted">${esc(String(x.why || '').slice(0, 140))}</small><small class="${isOff(x.m) ? 'go' : 'muted'}">${isOff(x.m) ? '✓ compos officielles' : `⏳ compos vers ${hhmmFr(x.m.kickoff - 3600000)}`}</small></span><b>${pct(x.tip.p)}</b>${addBtn(x)}</li>`).join('')}</ul>
+      <p class="small muted">Sélection testée sur 11 jours (17-27/10) : 43 conseils sur 52 passés (83 %). À jouer en simple ou par deux, pas tous en un seul combiné (5 sur 5 n'arrive qu'un jour sur trois).</p>`
+        : '<p class="small muted">Aucune piste assez solide aujourd\'hui pour être conseillée : mieux vaut s\'abstenir ou se limiter aux paris sûrs.</p>'}
+    </div>`;
   // 🛡️ Paris sûrs, à jouer chacun en simple
   const safe = safeBets(list);
   const safeCard = safe.length ? `<div class="combo-card safe">
       ${cardHead('c-safe', '🛡️ Paris sûrs (en simple)', 'Pour faire grossir la cagnotte : chacun se joue seul, pas en combiné.')}
-      ${isFold('c-safe') ? '' : `<ul class="combo-mini">${safe.map(x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span><small><b>${esc(x.tip.label)}</b> · cote juste ≈ ${fmtOdd(1 / x.tip.p)}</small><small class="${isOff(x.m) ? 'go' : 'muted'}">${isOff(x.m) ? '✓ compos officielles : à jouer' : `⏳ compos vers ${hhmmFr(x.m.kickoff - 3600000)} : attendez-les`}</small></span><b>${pct(x.tip.p)}</b></li>`).join('')}</ul>
+      ${isFold('c-safe') ? '' : `<ul class="combo-mini">${safe.map(x => `<li><span class="c-time">${hhmmFr(x.m.kickoff)}</span><span class="cm-txt"><span class="c-names">${esc(x.m.home.name)} – ${esc(x.m.away.name)}</span><small><b>${esc(x.tip.label)}</b> · cote juste ≈ ${fmtOdd(1 / x.tip.p)}</small><small class="${isOff(x.m) ? 'go' : 'muted'}">${isOff(x.m) ? '✓ compos officielles : à jouer' : `⏳ compos vers ${hhmmFr(x.m.kickoff - 3600000)} : attendez-les`}</small></span><b>${pct(x.tip.p)}</b>${addBtn(x)}</li>`).join('')}</ul>
       <p class="small muted">Classés par horaire. Jouez chacun une fois les compos connues (environ 1 h avant). Testé sur 9 jours (17-25/10) : en prenant chaque jour les 4 plus sûrs, 33 sur 36 sont passés (92 %). À vous de juger la cote : au-dessus de 90 %, le bookmaker paie souvent moins de 1,10.</p>`}
     </div>` : '';
   const bigCard = `<div class="combo-card">
@@ -494,7 +540,7 @@ function planHtml(list) {
   return `<section class="combos plan">
     <div class="top-head fold-head" data-act="fold" data-key="plan"><h2>🎯 Combinés du jour</h2>${foldIc('plan')}</div>
     ${isFold('plan') ? '' : `<p class="day-mood"><b>${mood}</b><br><span class="small muted">${up.length} matchs à venir · ${solidN} pistes solides · ${offN} compo${offN > 1 ? 's' : ''} officielle${offN > 1 ? 's' : ''}</span></p>
-    <div class="combo-grid">${safeCard}${slotCard}${smallCard}${bigCard}${persoCard}</div>
+    <div class="combo-grid">${conseilCard}${safeCard}${slotCard}${smallCard}${bigCard}${persoCard}</div>
     <p class="small muted">✓ = compos officielles. « dès 1,45 » : cote minimale à trouver chez le bookmaker. Touchez un pronostic (＋) sur une fiche pour faire votre propre combiné. Touchez un titre pour le replier.</p>
     <details class="more-combos"><summary>📚 Plus de combinés (top du jour, base solide, favoris, domicile, buteurs…)</summary>
       ${topHtml(list)}${combosHtml(list, 'others')}
@@ -568,6 +614,7 @@ function combosHtml(list, only) {
         return `<div class="combo-total"><span>${i ? '🚀 Gros combiné' : '✅ Combiné conseillé'} : ${legs.length} sélections · <b>${pp >= 0.01 ? pct(pp) : '< 1 %'}</b><br><small class="muted">${esc(legs.map(x => `${hhmmFr(x.m.kickoff)} ${x.m.home.name}–${x.m.away.name} : ${x.tip.label}`).join(' · '))}</small></span><span>cote juste ≈ <b>${(1 / pp).toFixed(1).replace('.', ',')}</b></span></div>`;
       }).join('') : ''}
       ${c.single || c.tiers || !active.length ? '' : `<div class="combo-total"><span>${active.length} sélection${active.length > 1 ? 's' : ''} · <b>${p >= 0.01 ? pct(p) : '< 1 %'}</b></span><span>${oddAll ? `cote bookmaker ≈ <b>${oddAll.toFixed(1).replace('.', ',')}</b>` : `cote juste ≈ <b>${(1 / p).toFixed(1).replace('.', ',')}</b>`}</span></div>`}
+      ${c.id === 'perso' && active.length ? betFormHtml(1 / p) : ''}
     </div>`;
   };
   if (only === 'perso') return card(cards.find(c => c.id === 'perso'));
@@ -576,6 +623,25 @@ function combosHtml(list, only) {
     <div class="combo-grid">${shown.map(card).join('') || '<p class="small muted">Rien de plus pour la suite de la journée.</p>'}</div>
     <p class="small muted">Les probabilités se multiplient : plus le combiné est long, plus le gain est gros et plus les chances sont faibles. Vos retraits et votre combiné perso restent sur ce téléphone jusqu'à minuit.</p>
   </section>`;
+}
+
+// Bouton ＋ d'une ligne de carte (Conseil du jour, Paris sûrs) : ajoute le pari à « Mon combiné perso »
+const addBtn = x => { const on = inPerso(x.m.id, x.tip.key); return `<button class="drop add${on ? ' on' : ''}" data-act="perso" data-mid="${esc(x.m.id)}" data-key="${esc(x.tip.key)}" aria-label="${on ? 'Retirer de' : 'Ajouter à'} mon combiné">${on ? '✓' : '＋'}</button>`; };
+
+// 💶 « J'ai joué ce pari » : cote du bookmaker + mise, avec l'avis « vaut le coup / trop mal payé » en direct
+let betDraft = { odd: '', stake: '' };
+function betFormHtml(fair) {
+  const v = valueText(fair, parseFloat(String(betDraft.odd).replace(',', '.')));
+  return `<div class="bet-form" data-fair="${fair}">
+    <p class="small"><b>💶 J'ai joué ce pari</b> (${perso.length === 1 ? 'simple' : `combiné de ${perso.length}`})</p>
+    <div class="bet-inputs">
+      <label>Cote du bookmaker<input inputmode="decimal" data-bet-in="odd" value="${esc(betDraft.odd)}" placeholder="ex. 2,40"></label>
+      <label>Mise (€)<input inputmode="decimal" data-bet-in="stake" value="${esc(betDraft.stake)}" placeholder="ex. 5"></label>
+    </div>
+    <p class="small bet-value ${v.k}">${esc(v.t)}</p>
+    <button class="btn" data-act="bet-save">Enregistrer dans « Mes paris »</button>
+    <p class="small bet-msg"></p>
+  </div>`;
 }
 
 // Mes favoris : les matchs choisis, en haut de page, avec la demande d'analyse approfondie pour Claude
@@ -664,8 +730,17 @@ $('#match-list').addEventListener('click', e => {
   if (b.dataset.act === 'drop') { const c = b.dataset.combo; dropped[c] = [...new Set([...(dropped[c] || []), b.dataset.mid])]; saveDropped(); renderMatches(); return; }
   if (b.dataset.act === 'undrop') { delete dropped[b.dataset.combo]; saveDropped(); renderMatches(); return; }
   if (b.dataset.act === 'perso-del') { perso = perso.filter(x => !(x.id === b.dataset.mid && x.key === b.dataset.key)); savePerso(); renderMatches(); return; }
+  if (b.dataset.act === 'bet-save') {
+    const f = b.closest('.bet-form'), val = k => f.querySelector(`[data-bet-in="${k}"]`).value;
+    const err = addBet(persoLegs().map(x => ({ m: x.m, tip: x.tip })), val('odd'), val('stake'));
+    if (err) { f.querySelector('.bet-msg').textContent = err; return; }
+    perso = []; savePerso(); betDraft = { odd: '', stake: '' };
+    renderMatches(); alertBanner('💶 Pari enregistré dans « Mes paris ».'); return;
+  }
   if (b.dataset.act === 'perso') {
-    const m = state.matches.find(x => x.id === b.closest('.card').dataset.id), a = m && state.analyses[m.id];
+    // (bouton d'une fiche de match, ou d'une ligne de carte : Conseil du jour, Paris sûrs → data-mid)
+    const mid = b.dataset.mid || (b.closest('.card') && b.closest('.card').dataset.id);
+    const m = state.matches.find(x => x.id === mid), a = m && state.analyses[m.id];
     if (!m || !a) return;
     // Piste précise (bouton ＋ d'une piste), sinon la meilleure piste du match, sinon la victoire du favori
     const main = a.verdict.code === 'skip' ? null : a.tips.filter(x => !String(x.key).startsWith('SC')).sort((x, y) => y.p - x.p)[0];
